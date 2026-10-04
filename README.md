@@ -34,6 +34,28 @@ Pull Request that leaves the repository coherent.
 - **Only the approved contract is implemented.** A route that is not in `booking-service.yaml` is not added.
 - **The API never connects to RabbitMQ.** It writes events to the outbox table only.
 
+## Build, test and run
+
+Requirements: Java 21 and Maven 3.9 (or Docker).
+
+```bash
+mvn -B verify                              # compile and run every test
+mvn -B -pl booking-core test               # only the domain tests (no Spring, no database)
+mvn -B -pl booking-app -am package -DskipTests
+java -jar booking-app/target/booking-app-0.1.0.jar   # starts on PORT, 8083 by default
+```
+
+With Docker, from the root of the repository:
+
+```bash
+docker build -f deploy/Dockerfile -t csp-booking-api .
+docker run --rm -e PORT=8083 -p 8083:8083 csp-booking-api
+```
+
+The log ends with `Started BookingApplication` when the service is up. The service has no route yet. In the platform,
+`csp-infra` includes `deploy/compose.yml`, which exposes the port on the `platform` network without publishing it:
+only the gateway reaches the service. Copy `.env.example` to `.env` for local values and never commit `.env`.
+
 ## Related repositories
 
 | Repository | Relation |
