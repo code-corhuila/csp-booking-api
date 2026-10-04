@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: booking-api
+  lifecycle:
+    timeout-per-shutdown-phase: 20s   # graceful shutdown: in-flight requests may finish for 20 s
+server:
+  port: ${PORT:8083}
+  shutdown: graceful                  # stop accepting new requests, let the running ones finish
+  tomcat:
+    connection-timeout: 5s            # time to receive the request line and headers
+    keep-alive-timeout: 60s           # idle connection
+    threads:
+      max: 200
+# Pool size, wait for a connection and statement timeout are declared here by the persistence Pull Request.
+logging:
+  structured:
+    format:
+      console: ecs                    # one JSON object per line; the MDC adds the correlation id
