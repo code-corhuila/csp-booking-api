@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.app;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
+import co.edu.corhuila.csp.booking.adapter.in.http.CorrelationIdFilter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,5 +17,10 @@ class BookingApplicationTests {
     @Test
     void theCompositionRootStarts() {
         assertNotNull(context.getBean(BookingApplication.class));
+    }
+
+    @Test
+    void theAdaptersArePartOfTheSameContext() {
+        assertNotNull(context.getBean(CorrelationIdFilter.class));
     }
 }

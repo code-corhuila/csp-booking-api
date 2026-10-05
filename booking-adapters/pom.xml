@@ -12,7 +12,8 @@
 
   <artifactId>booking-adapters</artifactId>
 
-  <!-- The web and persistence dependencies are added by the Pull Requests that introduce those adapters. -->
+  <!-- Input adapters (HTTP) and output adapters (persistence). The dependency of each
+       adapter arrives with the Pull Request that introduces it. -->
   <dependencies>
     <dependency>
       <groupId>co.edu.corhuila.csp</groupId>
@@ -20,8 +21,12 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
