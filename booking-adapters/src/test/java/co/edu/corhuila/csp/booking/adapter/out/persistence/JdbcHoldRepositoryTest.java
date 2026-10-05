@@ -31,7 +31,8 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 /**
  * The SQL of the hold against the real engine, with the schema of csp-booking-db (Annex C).
  * It is skipped when TEST_DATABASE_URL is not defined: the URL carries the credentials, so one
- * variable is enough, for example {@code jdbc:postgresql://localhost:5432/csp?user=booking_app&password=ci-only}.
+ * variable is enough, for example {@code jdbc:postgresql://localhost:5432/csp} with the user and
+ * the password in the environment, never in the source.
  */
 @EnabledIfEnvironmentVariable(named = "TEST_DATABASE_URL", matches = ".+")
 class JdbcHoldRepositoryTest {
