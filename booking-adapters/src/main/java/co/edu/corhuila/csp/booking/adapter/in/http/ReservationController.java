@@ -3,30 +3,35 @@ package co.edu.corhuila.csp.booking.adapter.in.http;
 import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
+import java.time.Instant;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The route the contract opens with: {@code POST /api/v1/booking/holds}. The key of the request
- * decides between its two answers, 201 when this call made the hold and 200 when it replays one
- * that already existed (Norma 5.3.8). Every other answer of the contract is produced by
+ * The three routes of the reservation contract, under the base of {@code booking-service.yaml}:
+ * the hold whose key decides 201 or 200 (Norma 5.3.8), and the two reads that only ever show the
+ * reservations of the caller. Every other answer of the contract is produced by
  * {@link ApiExceptionHandler}.
  */
 @RestController
 @Validated
-@RequestMapping("/holds")
 public class ReservationController {
 
     private final ReservationUseCases useCases;
@@ -35,7 +40,7 @@ public class ReservationController {
         this.useCases = useCases;
     }
 
-    @PostMapping
+    @PostMapping("/holds")
     ResponseEntity<ReservationResponse> hold(
             @RequestHeader("Idempotency-Key") @Size(min = 16, max = 100) String idempotencyKey,
             @Valid @RequestBody CreateHoldRequest request,
@@ -49,6 +54,33 @@ public class ReservationController {
             return ResponseEntity.created(locationOf(http, reservation)).body(ReservationResponse.of(reservation));
         }
         return ResponseEntity.ok(ReservationResponse.of(reservation));
+    }
+
+    /**
+     * One reservation for its owner: the same read answers 403 when the id belongs to somebody
+     * else and 404 when no reservation has it (booking-service.yaml, {@code getReservation}).
+     */
+    @GetMapping("/reservations/{reservationId}")
+    ReservationResponse reservation(@PathVariable UUID reservationId, HttpServletRequest http) {
+        return ReservationResponse.of(useCases.getReservation(userIdOf(http), reservationId));
+    }
+
+    /**
+     * The page of the caller, newest first, with the window and the filters of the contract. A
+     * status the enumeration does not know and an instant that is not RFC 3339 are 400; a page or
+     * a limit outside the bounds of the contract is refused by the port that builds the window,
+     * which the answer turns into the same 400 instead of a 500.
+     */
+    @GetMapping("/reservations")
+    ReservationListResponse reservations(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int limit,
+            @RequestParam(required = false) ReservationStatus status,
+            @RequestParam(required = false) Instant createdBefore,
+            HttpServletRequest http) {
+        ReservationPage result = useCases.listReservations(
+                userIdOf(http), new ReservationQuery(page, limit, status, createdBefore));
+        return ReservationListResponse.of(result, page, limit);
     }
 
     /** The user the filter authenticated: the {@code sub} of the token, an id of this platform. */
