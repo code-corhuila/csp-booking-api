@@ -17,8 +17,6 @@ import java.text.ParseException;
 import java.util.Date;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
-import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
@@ -129,13 +127,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void writeError(HttpServletResponse response, String code, String message) throws IOException {
-        String traceId = MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY);
-        if (traceId == null) {
-            traceId = UUID.randomUUID().toString();
-        }
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        objectMapper.writeValue(response.getWriter(), ErrorResponse.of(code, message, traceId));
+        objectMapper.writeValue(response.getWriter(), ErrorResponse.of(code, message));
     }
 }
