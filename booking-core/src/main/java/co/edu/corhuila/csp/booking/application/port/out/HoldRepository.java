@@ -44,9 +44,19 @@ public interface HoldRepository {
     List<Reservation> findOverdueHeld(Instant now, int limit);
 
     /**
-     * Transitions a reservation to EXPIRED and writes the {@code ReservationExpired} outbox event
-     * in the same transaction (Norma 5.3.11). The correlation id of the sweep run travels in the
-     * event metadata.
+     * Releases an expired hold: the reservation and its hold become EXPIRED and the held seats
+     * become RELEASED, which is what makes them available for new holds (the partial unique index
+     * {@code uk_seat_hold_item_active_seat} only covers HELD and CONFIRMED seats). All of it and the
+     * {@code ReservationExpired} outbox event happen in one transaction (Norma 5.3.11).
+     *
+     * <p>The statements keep a {@code status = 'HELD'} guard so a concurrent confirmation that wins
+     * the race is never overwritten, and the reservation is only expired when its hold really is
+     * past {@code now}, so the invariant is enforced by the engine and not only by the caller.
+     *
+     * @param expired the reservation already transitioned by the domain to EXPIRED
+     * @param now the instant the sweep decided on
+     * @param correlationId the correlation id of the sweep run, written to the event metadata
+     * @throws IllegalStateException when the hold was no longer HELD at {@code now}
      */
-    void expire(Reservation reservation, String correlationId);
+    void expire(Reservation expired, Instant now, String correlationId);
 }

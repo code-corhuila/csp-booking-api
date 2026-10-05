@@ -69,7 +69,10 @@ public class ReservationService implements ReservationUseCases {
         Instant now = clock.instant();
         List<Reservation> overdue = holds.findOverdueHeld(now, batchSize);
         for (Reservation reservation : overdue) {
-            holds.expire(reservation, correlationId);
+            // The domain owns the invariant: a hold that is not overdue is refused here and never
+            // reaches the engine, so a sweep running on a clock behind the stored expiry changes
+            // nothing.
+            holds.expire(reservation.expire(now), now, correlationId);
         }
         int remaining = holds.findOverdueHeld(now, batchSize).size();
         return new ExpireHoldsResult(overdue.size(), remaining);

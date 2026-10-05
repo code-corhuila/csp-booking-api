@@ -14,6 +14,7 @@ import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationAccessDeniedException;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
@@ -138,8 +139,25 @@ class ReservationServiceTest {
 
         assertEquals(1, result.expired());
         assertEquals(0, result.remaining());
-        assertEquals(overdue, holds.expired.get(0));
         assertEquals(CORRELATION, holds.expiredCorrelation);
+        // The domain returns a new aggregate in EXPIRED: the same id, the same seats, and the
+        // instant the sweep decided on. What reaches the repository is the transition, never the
+        // stored HELD instance.
+        Reservation expired = holds.expired.get(0);
+        assertEquals(overdue.id(), expired.id());
+        assertEquals(ReservationStatus.EXPIRED, expired.status());
+        assertEquals(overdue.seatLabels(), expired.seatLabels());
+    }
+
+    @Test
+    void aHoldThatIsNotOverdueIsRefusedByTheDomainAndNeverReachesTheEngine() {
+        Reservation notYetOverdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", 0);
+        holds.overdue = List.of(notYetOverdue);
+
+        assertThrows(InvalidStatusTransitionException.class, () -> service.expireHolds(100, CORRELATION));
+
+        assertNull(holds.expired);
     }
 
     @Test
@@ -228,16 +246,21 @@ class ReservationServiceTest {
 
         @Override
         public List<Reservation> findOverdueHeld(Instant now, int limit) {
-            return overdue;
+            return overdue.stream().limit(limit).toList();
         }
 
         @Override
-        public void expire(Reservation reservation, String correlationId) {
+        public void expire(Reservation expiredReservation, Instant now, String correlationId) {
             if (expired == null) {
                 expired = new ArrayList<>();
             }
-            expired.add(reservation);
+            expired.add(expiredReservation);
             expiredCorrelation = correlationId;
+            // An expired reservation is no longer overdue: the sweep must not see it twice. It is
+            // matched by id because the domain returns a new instance in EXPIRED.
+            overdue = overdue.stream()
+                    .filter(candidate -> !candidate.id().equals(expiredReservation.id()))
+                    .toList();
         }
     }
 }
