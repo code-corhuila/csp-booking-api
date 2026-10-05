@@ -17,6 +17,7 @@ import java.text.ParseException;
 import java.util.Date;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
@@ -113,7 +114,25 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: it has no sub claim");
             return Optional.empty();
         }
+        if (!isId(subject)) {
+            logger.debug("rejected token: its sub is not the id of a user of this platform");
+            return Optional.empty();
+        }
         return Optional.of(subject);
+    }
+
+    /**
+     * The {@code sub} is the id of the user in every table of this platform (the gateway also
+     * forwards it as {@code X-User-Id}), so a token whose subject is not one is not acceptable
+     * here: the controllers can then read the attribute as an id without a second check.
+     */
+    private static boolean isId(String subject) {
+        try {
+            UUID.fromString(subject);
+            return true;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     /** The route without the context path, so the check works behind and without the gateway. */

@@ -151,7 +151,7 @@ class JdbcHoldRepositoryTest {
         BusinessRuleViolationException exception = assertThrows(BusinessRuleViolationException.class,
                 () -> repository.create(command(attempt, "aaaaaaaa-0000-0000-0000-000000000002", "hash-second")));
 
-        assertTrue(exception.getMessage().contains("already HELD"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("not available"), exception.getMessage());
         assertEquals(0, count("SELECT count(*) FROM booking.seat_hold WHERE id = ?", attempt.id()));
         assertEquals(0, count("SELECT count(*) FROM booking.idempotency_key WHERE hold_id = ?", attempt.id()));
         assertEquals(0, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ?", attempt.id()));
