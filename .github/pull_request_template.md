@@ -3,9 +3,11 @@
 
 
 ## User story (required)
-<!-- Replace NN with the story issue of csp-docs. A base scaffold pull request (structure only) writes:
+<!-- Replace NN with the story issue of this repository (HU-BOOKING-001 is #8). The user stories
+     live here as issues since Cut 2, so an in-repo reference is used: "Refs: #8".
+     A base scaffold pull request (structure only) writes:
      "Not applicable: base scaffold, structure only". -->
-Refs: code-corhuila/csp-docs#NN
+Refs: #NN
 
 
 ## How it was tested
