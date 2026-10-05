@@ -4,6 +4,7 @@ import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.ExpireHoldsResult;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
@@ -17,13 +18,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * The use cases of the reservation aggregate: the hold and the two reads the contract exposes. It
- * depends only on the domain and on the ports, and it asks the clock for the time so the expiry of
- * a hold can be verified without waiting for it.
+ * The use cases of the reservation aggregate: the hold, the expiration sweep and the two reads the
+ * contract exposes. It depends only on the domain and on the ports, and it asks the clock for the
+ * time so the expiry of a hold can be verified without waiting for it.
  */
 public class ReservationService implements ReservationUseCases {
 
@@ -60,6 +62,17 @@ public class ReservationService implements ReservationUseCases {
     @Override
     public ReservationPage listReservations(UUID callerId, ReservationQuery query) {
         return holds.findByUser(callerId, query);
+    }
+
+    @Override
+    public ExpireHoldsResult expireHolds(int batchSize, String correlationId) {
+        Instant now = clock.instant();
+        List<Reservation> overdue = holds.findOverdueHeld(now, batchSize);
+        for (Reservation reservation : overdue) {
+            holds.expire(reservation, correlationId);
+        }
+        int remaining = holds.findOverdueHeld(now, batchSize).size();
+        return new ExpireHoldsResult(overdue.size(), remaining);
     }
 
     /**

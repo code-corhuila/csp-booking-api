@@ -1,6 +1,8 @@
 package co.edu.corhuila.csp.booking.application.port.out;
 
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -34,4 +36,17 @@ public interface HoldRepository {
      * tiebreaker, in the window the contract asks for.
      */
     ReservationPage findByUser(UUID userId, ReservationQuery query);
+
+    /**
+     * HELD reservations past their expiration time, oldest expiration first, up to {@code limit}.
+     * Used by the expiration sweep of csp-worker (HU-BOOKING-002).
+     */
+    List<Reservation> findOverdueHeld(Instant now, int limit);
+
+    /**
+     * Transitions a reservation to EXPIRED and writes the {@code ReservationExpired} outbox event
+     * in the same transaction (Norma 5.3.11). The correlation id of the sweep run travels in the
+     * event metadata.
+     */
+    void expire(Reservation reservation, String correlationId);
 }

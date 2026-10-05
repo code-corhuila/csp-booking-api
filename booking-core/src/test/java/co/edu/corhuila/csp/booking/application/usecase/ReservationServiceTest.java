@@ -22,6 +22,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -127,6 +128,45 @@ class ReservationServiceTest {
         assertNull(holds.stored);
     }
 
+    @Test
+    void theExpirationSweepQueriesOverdueHoldsAndExpiresThemWithTheCorrelationId() {
+        Reservation overdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+        holds.overdue = List.of(overdue);
+
+        var result = service.expireHolds(100, CORRELATION);
+
+        assertEquals(1, result.expired());
+        assertEquals(0, result.remaining());
+        assertEquals(overdue, holds.expired.get(0));
+        assertEquals(CORRELATION, holds.expiredCorrelation);
+    }
+
+    @Test
+    void theExpirationSweepReportsRemainingOverdueForTheNextRun() {
+        Reservation overdue1 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+        Reservation overdue2 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+        holds.overdue = List.of(overdue1, overdue2);
+
+        var result = service.expireHolds(1, CORRELATION);
+
+        assertEquals(1, result.expired());
+        assertEquals(1, result.remaining());
+    }
+
+    @Test
+    void theExpirationSweepWithNoOverdueHoldsDoesNothing() {
+        holds.overdue = List.of();
+
+        var result = service.expireHolds(100, CORRELATION);
+
+        assertEquals(0, result.expired());
+        assertEquals(0, result.remaining());
+        assertNull(holds.expired);
+    }
+
     private String hashOf(CreateHoldInput request) {
         holds.stored = null;
         service.createHold(request);
@@ -163,6 +203,9 @@ class ReservationServiceTest {
         private UUID askedById;
         private UUID askedForUser;
         private ReservationQuery askedWith;
+        private List<Reservation> overdue = List.of();
+        private List<Reservation> expired;
+        private String expiredCorrelation;
 
         @Override
         public CreateHoldResult create(CreateHoldCommand command) {
@@ -181,6 +224,20 @@ class ReservationServiceTest {
             askedForUser = userId;
             askedWith = query;
             return page;
+        }
+
+        @Override
+        public List<Reservation> findOverdueHeld(Instant now, int limit) {
+            return overdue;
+        }
+
+        @Override
+        public void expire(Reservation reservation, String correlationId) {
+            if (expired == null) {
+                expired = new ArrayList<>();
+            }
+            expired.add(reservation);
+            expiredCorrelation = correlationId;
         }
     }
 }

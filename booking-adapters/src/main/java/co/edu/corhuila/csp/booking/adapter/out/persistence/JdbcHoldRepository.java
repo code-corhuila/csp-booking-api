@@ -42,6 +42,7 @@ public class JdbcHoldRepository implements HoldRepository {
 
     private static final String AGGREGATE_TYPE = "Reservation";
     private static final String EVENT_TYPE = "ReservationHeld";
+    private static final String EXPIRED_EVENT_TYPE = "ReservationExpired";
     private static final String EVENT_SOURCE = "booking-service";
 
     private static final String INSERT_SEAT_HOLD = """
@@ -142,6 +143,29 @@ public class JdbcHoldRepository implements HoldRepository {
                 RESERVATION_SELECT + where + GROUP_BY_RESERVATION + NEWEST_FIRST + " LIMIT ? OFFSET ?",
                 this::toReservation, arguments.toArray());
         return new ReservationPage(items, total);
+    }
+
+    @Override
+    public List<Reservation> findOverdueHeld(Instant now, int limit) {
+        return jdbc.query(
+                RESERVATION_SELECT + "WHERE r.status = 'HELD' AND h.expires_at < ?"
+                        + GROUP_BY_RESERVATION + " ORDER BY h.expires_at ASC LIMIT ?",
+                this::toReservation, at(now), limit);
+    }
+
+    @Override
+    public void expire(Reservation reservation, String correlationId) {
+        String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        transactionTemplate.executeWithoutResult(status -> {
+            int updated = jdbc.update(
+                    "UPDATE booking.reservation SET status = 'EXPIRED' WHERE id = ? AND status = 'HELD'",
+                    reservation.id());
+            if (updated == 0) {
+                throw new IllegalStateException(
+                        "the reservation " + reservation.id() + " is no longer HELD and cannot be expired");
+            }
+            insertExpiredOutboxEvent(reservation, correlation);
+        });
     }
 
     /**
@@ -305,6 +329,46 @@ public class JdbcHoldRepository implements HoldRepository {
     private static Instant instant(ResultSet rs, String column) throws SQLException {
         OffsetDateTime value = rs.getObject(column, OffsetDateTime.class);
         return value == null ? null : value.toInstant();
+    }
+
+    /**
+     * Writes the {@code ReservationExpired} outbox event in the same transaction as the status
+     * update (Norma 5.3.11). The envelope follows the same shape as {@code ReservationHeld}.
+     */
+    private void insertExpiredOutboxEvent(Reservation reservation, String correlationId) {
+        UUID eventId = UUID.randomUUID();
+        String envelope;
+        try {
+            envelope = objectMapper.writeValueAsString(expiredEnvelopeOf(eventId, reservation, correlationId));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("the outbox event of the expiration cannot be serialized", exception);
+        }
+        jdbc.update(INSERT_OUTBOX_EVENT, eventId, AGGREGATE_TYPE, reservation.id(), EXPIRED_EVENT_TYPE, envelope,
+                at(reservation.createdAt()));
+    }
+
+    private Map<String, Object> expiredEnvelopeOf(UUID eventId, Reservation reservation, String correlationId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.id().toString());
+        payload.put("userId", reservation.userId().toString());
+        payload.put("showtimeId", reservation.showtimeId().toString());
+        payload.put("seatNumbers", reservation.seatLabels());
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("correlationId", correlationId);
+        metadata.put("causationId", null);
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("eventId", eventId.toString());
+        envelope.put("eventType", EXPIRED_EVENT_TYPE);
+        envelope.put("occurredAt", reservation.createdAt().toString());
+        envelope.put("version", 1);
+        envelope.put("source", EVENT_SOURCE);
+        envelope.put("aggregateId", reservation.id().toString());
+        envelope.put("aggregateType", AGGREGATE_TYPE);
+        envelope.put("payload", payload);
+        envelope.put("metadata", metadata);
+        return envelope;
     }
 
     private record StoredKey(UUID holdId, String requestHash) {
