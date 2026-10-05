@@ -57,6 +57,7 @@ class HealthControllerTest {
         mockMvc.perform(get("/health/ready").header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.error").value("SERVICE_UNAVAILABLE"))
+                .andExpect(jsonPath("$.message").value("A required service or dependency is unavailable"))
                 .andExpect(jsonPath("$.traceId").value(CORRELATION));
     }
 
