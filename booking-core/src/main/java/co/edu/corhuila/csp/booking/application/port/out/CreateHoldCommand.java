@@ -19,5 +19,8 @@ public record CreateHoldCommand(Reservation reservation, String idempotencyKey, 
         if (requestHash == null || requestHash.isBlank()) {
             throw new IllegalArgumentException("the request hash is required");
         }
+        if (correlationId == null || correlationId.isBlank()) {
+            throw new IllegalArgumentException("the correlation id is required");
+        }
     }
 }
