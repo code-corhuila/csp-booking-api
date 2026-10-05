@@ -61,15 +61,32 @@ public class ApiExceptionHandler {
         return answer(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Invalid input data", null);
     }
 
-    /** 403: the reservation exists and belongs to somebody else. */
-    @ExceptionHandler(ReservationAccessDeniedException.class)
-    ResponseEntity<ErrorResponse> forbidden() {
-        return answer(HttpStatus.FORBIDDEN, "FORBIDDEN", "You are not authorized to perform this action", null);
+    /**
+     * 400: the request broke one of the bounds the contract declares and the ports guard (the page
+     * of a list, the width of a window). The bound is named in the answer instead of the service
+     * failing as if the request had reached a bug.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    ResponseEntity<ErrorResponse> outOfBounds(IllegalArgumentException exception) {
+        String message = exception.getMessage() == null ? "Invalid input data" : exception.getMessage();
+        return answer(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", message, null);
     }
 
-    /** 404: no reservation with that id, and no route with that path. */
-    @ExceptionHandler({ReservationNotFoundException.class, NoHandlerFoundException.class, NoResourceFoundException.class})
-    ResponseEntity<ErrorResponse> notFound() {
+    /** 403: the reservation exists and belongs to somebody else, and the answer says so. */
+    @ExceptionHandler(ReservationAccessDeniedException.class)
+    ResponseEntity<ErrorResponse> forbidden(ReservationAccessDeniedException exception) {
+        return answer(HttpStatus.FORBIDDEN, "FORBIDDEN", exception.getMessage(), null);
+    }
+
+    /** 404: no reservation with that id; the answer names the reservation that was asked for. */
+    @ExceptionHandler(ReservationNotFoundException.class)
+    ResponseEntity<ErrorResponse> reservationNotFound(ReservationNotFoundException exception) {
+        return answer(HttpStatus.NOT_FOUND, "NOT_FOUND", exception.getMessage(), null);
+    }
+
+    /** 404: nothing answers that path. */
+    @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+    ResponseEntity<ErrorResponse> noRoute() {
         return answer(HttpStatus.NOT_FOUND, "NOT_FOUND", "The requested resource does not exist", null);
     }
 
