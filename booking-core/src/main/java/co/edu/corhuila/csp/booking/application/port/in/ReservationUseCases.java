@@ -1,0 +1,28 @@
+package co.edu.corhuila.csp.booking.application.port.in;
+
+import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import java.util.UUID;
+
+/** Everything an authenticated client can ask of the reservation aggregate. */
+public interface ReservationUseCases {
+
+    /**
+     * Holds the requested seats of a showtime for the authenticated user, atomically: if any seat
+     * is taken, nothing is created.
+     *
+     * @return the reservation and whether this call created it or replayed an earlier one
+     */
+    CreateHoldResult createHold(CreateHoldInput input);
+
+    /**
+     * One reservation for its caller. The id answers 404 and the owner answers 403, so both checks
+     * belong to the same read.
+     */
+    Reservation getReservation(UUID callerId, UUID reservationId);
+
+    /** The page of the reservations of the caller, in the window and filters of the request. */
+    ReservationPage listReservations(UUID callerId, ReservationQuery query);
+}

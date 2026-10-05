@@ -4,6 +4,8 @@ import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
@@ -15,6 +17,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -80,8 +83,11 @@ public class JdbcHoldRepository implements HoldRepository {
             SELECT hold_id, request_hash FROM booking.idempotency_key WHERE "key" = ?
             """;
 
-    /** The reservation and its snapshots: one row per seat aggregated into the labels of the hold. */
-    private static final String FIND_BY_HOLD = """
+    /**
+     * The reservation and its snapshots: one row per seat aggregated into the labels of the hold.
+     * Every read composes it with its own filter, order and window.
+     */
+    private static final String RESERVATION_SELECT = """
             SELECT r.id AS id, r.user_id AS user_id, r.showtime_id AS showtime_id, r.status AS status,
                    r.total_amount AS total_amount, r.created_at AS created_at, r.confirmed_at AS confirmed_at,
                    h.movie_title_snapshot AS movie_title_snapshot, h.room_name_snapshot AS room_name_snapshot,
@@ -90,9 +96,13 @@ public class JdbcHoldRepository implements HoldRepository {
             FROM booking.reservation r
             JOIN booking.seat_hold h ON h.id = r.hold_id
             JOIN booking.reservation_seat s ON s.reservation_id = r.id
-            WHERE r.hold_id = ?
-            GROUP BY r.id, h.id
             """;
+
+    /** The seats live in their own rows: the aggregate folds them back without a second query. */
+    private static final String GROUP_BY_RESERVATION = " GROUP BY r.id, h.id";
+
+    /** The contract orders the list from the newest createdAt to the oldest, id as tiebreaker. */
+    private static final String NEWEST_FIRST = " ORDER BY r.created_at DESC, r.id DESC";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactionTemplate;
@@ -112,8 +122,48 @@ public class JdbcHoldRepository implements HoldRepository {
 
     /** The reservation of a hold, with its snapshots and its seats in request-independent order. */
     Optional<Reservation> findByHoldId(UUID holdId) {
-        List<Reservation> found = jdbc.query(FIND_BY_HOLD, this::toReservation, holdId);
-        return found.stream().findFirst();
+        return first(RESERVATION_SELECT + "WHERE r.hold_id = ?" + GROUP_BY_RESERVATION, holdId);
+    }
+
+    @Override
+    public Optional<Reservation> findById(UUID reservationId) {
+        return first(RESERVATION_SELECT + "WHERE r.id = ?" + GROUP_BY_RESERVATION, reservationId);
+    }
+
+    @Override
+    public ReservationPage findByUser(UUID userId, ReservationQuery query) {
+        List<Object> arguments = new ArrayList<>();
+        String where = whereFor(userId, query, arguments);
+        long total = jdbc.queryForObject("SELECT count(*) FROM booking.reservation r " + where, Long.class,
+                arguments.toArray());
+        arguments.add(query.limit());
+        arguments.add(query.offset());
+        List<Reservation> items = jdbc.query(
+                RESERVATION_SELECT + where + GROUP_BY_RESERVATION + NEWEST_FIRST + " LIMIT ? OFFSET ?",
+                this::toReservation, arguments.toArray());
+        return new ReservationPage(items, total);
+    }
+
+    /**
+     * Only literal fragments are appended to the WHERE: every value is bound as a parameter, so no
+     * filter can ever become part of the statement.
+     */
+    private static String whereFor(UUID userId, ReservationQuery query, List<Object> arguments) {
+        StringBuilder where = new StringBuilder("WHERE r.user_id = ?");
+        arguments.add(userId);
+        if (query.status() != null) {
+            where.append(" AND r.status = ?");
+            arguments.add(query.status().name());
+        }
+        if (query.createdBefore() != null) {
+            where.append(" AND r.created_at < ?");
+            arguments.add(at(query.createdBefore()));
+        }
+        return where.toString();
+    }
+
+    private Optional<Reservation> first(String sql, Object... arguments) {
+        return jdbc.query(sql, this::toReservation, arguments).stream().findFirst();
     }
 
     private CreateHoldResult insert(CreateHoldCommand command, TransactionStatus status) {
