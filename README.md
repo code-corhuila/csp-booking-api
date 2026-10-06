@@ -82,6 +82,34 @@ The token is a JWT signed with RS256 whose `sub` is the id of the user; `csp-inf
 local work (ADR-020). Every error is the envelope of the contract: `error`, `message`, the `details` that name the
 fields that broke a validation, and `traceId`.
 
+## Internal operations
+
+Not part of the public contract and never routed by the gateway: only `csp-worker` calls them, with a service token.
+A client token receives `403`.
+
+| Route | Answer |
+|---|---|
+| `POST /internal/maintenance/expire-holds` | Expires the HELD reservations past their time (HU-BOOKING-002): `200` `{"expired", "remaining"}`, `401`/`403` |
+
+- **Authentication:** the same RS256 validation as every route. The `sub` of the token must be one of `SERVICE_SUBJECTS`
+  (`csp-worker` by default); `X-Correlation-Id` is required and travels to the event.
+- **Limits (Norma 5.3.10):** one call expires at most 100 holds, oldest first; `remaining` tells the worker whether
+  another run is needed. The interval between runs belongs to `csp-worker`.
+- **Idempotent:** every statement keeps a `status = 'HELD'` guard, so a repeated or overlapping sweep changes nothing,
+  and a confirmation that wins the race is never overwritten.
+- **What expiring does, in one transaction:** `reservation` and `seat_hold` become `EXPIRED`, the `seat_hold_item`
+  rows become `RELEASED` (that is what frees the seats in `uk_seat_hold_item_active_seat`), and `ReservationExpired`
+  is written to the outbox.
+- **Without the sweep running,** held seats are never released: check that `csp-worker` is up and that its
+  `SERVICE_TOKEN` carries `sub=csp-worker`.
+
+## Integration tests
+
+`JdbcHoldRepositoryTest` runs only when `TEST_DATABASE_URL` is set, for example
+`jdbc:postgresql://localhost:5432/csp?user=postgres&password=postgres`, over a database where the migrations of
+`csp-booking-db` were applied. CI does this on every Pull Request (it needs the `DB_REPO_TOKEN` secret to read that
+repository).
+
 ## Related repositories
 
 | Repository | Relation |
