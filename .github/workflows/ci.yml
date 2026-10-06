@@ -36,19 +36,27 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      TEST_DATABASE_URL: jdbc:postgresql://localhost:5432/csp?user=postgres&password=postgres
+      DB_REPO_TOKEN: ${{ secrets.DB_REPO_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       # The schema is owned by csp-booking-db (Norma 5.2.1): this repository only applies it.
       # DB_REPO_TOKEN is a read-only token for that repository; GITHUB_TOKEN cannot read another one.
+      # Without it the integration tests stay skipped, loudly, instead of failing the build.
+      - name: Warn that the integration tests are skipped
+        if: env.DB_REPO_TOKEN == ''
+        run: echo "::warning::DB_REPO_TOKEN is not set, so the PostgreSQL integration tests are skipped"
       - uses: actions/checkout@v4
+        if: env.DB_REPO_TOKEN != ''
         with:
           repository: code-corhuila/csp-booking-db
           ref: develop
           path: csp-booking-db
           token: ${{ secrets.DB_REPO_TOKEN }}
       - name: Apply the booking schema
+        if: env.DB_REPO_TOKEN != ''
         run: |
+          echo "TEST_DATABASE_URL=jdbc:postgresql://localhost:5432/csp?user=postgres&password=postgres" >> "$GITHUB_ENV"
+
           # One version sequence for the whole repository: the order is the number, not the folder.
           find csp-booking-db/01_ddl csp-booking-db/02_dml csp-booking-db/03_dcl csp-booking-db/04_tcl             -name 'V*.sql' | awk -F/ '{print $NF" "$0}' | sort | cut -d' ' -f2 |
             while read -r migration; do
