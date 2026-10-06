@@ -18,6 +18,7 @@ import java.util.Date;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
@@ -42,29 +43,47 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String BEARER = "Bearer ";
     private static final Set<String> PUBLIC_PATHS = Set.of("/health", "/health/ready");
 
+    private static final String INTERNAL_PREFIX = "/internal/";
+
     private final RSAPublicKey publicKey;
     private final ObjectMapper objectMapper;
+    private final Set<String> serviceSubjects;
 
-    public JwtAuthenticationFilter(RSAPublicKey jwtPublicKey, ObjectMapper objectMapper) {
+    /**
+     * @param serviceSubjects the {@code sub} of the service tokens that may call the internal
+     *     operations (ADR-020, {@code SERVICE_SUBJECTS}); a client token never may
+     */
+    public JwtAuthenticationFilter(RSAPublicKey jwtPublicKey, ObjectMapper objectMapper,
+            @Value("${SERVICE_SUBJECTS:csp-worker}") Set<String> serviceSubjects) {
         this.publicKey = jwtPublicKey;
         this.objectMapper = objectMapper;
+        this.serviceSubjects = Set.copyOf(serviceSubjects);
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (PUBLIC_PATHS.contains(pathAfterContextPath(request))) {
+        String path = pathAfterContextPath(request);
+        if (PUBLIC_PATHS.contains(path)) {
             chain.doFilter(request, response);
             return;
         }
         String header = request.getHeader(AUTHORIZATION_HEADER);
         if (header == null || !header.regionMatches(true, 0, BEARER, 0, BEARER.length())) {
-            writeError(response, "UNAUTHORIZED", "Authentication token required");
+            writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "UNAUTHORIZED", "Authentication token required");
             return;
         }
         Optional<String> userId = userIdOf(header.substring(BEARER.length()).trim());
         if (userId.isEmpty()) {
-            writeError(response, "INVALID_TOKEN", "the token is invalid or expired");
+            writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "INVALID_TOKEN", "the token is invalid or expired");
+            return;
+        }
+        // An internal operation takes only a service token, and a service token takes only an
+        // internal operation: a valid token of the wrong kind is a 403, not a 401 (ADR-020).
+        boolean internal = path != null && path.startsWith(INTERNAL_PREFIX);
+        if (internal != serviceSubjects.contains(userId.get())) {
+            writeError(response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN",
+                    "the token is not allowed to call this operation");
             return;
         }
         request.setAttribute(USER_ID_ATTRIBUTE, userId.get());
@@ -114,7 +133,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: it has no sub claim");
             return Optional.empty();
         }
-        if (!isId(subject)) {
+        if (!serviceSubjects.contains(subject) && !isId(subject)) {
             logger.debug("rejected token: its sub is not the id of a user of this platform");
             return Optional.empty();
         }
@@ -145,8 +164,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return uri.substring(context.length());
     }
 
-    private void writeError(HttpServletResponse response, String code, String message) throws IOException {
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    private void writeError(HttpServletResponse response, int status, String code, String message)
+            throws IOException {
+        response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         objectMapper.writeValue(response.getWriter(), ErrorResponse.of(code, message));

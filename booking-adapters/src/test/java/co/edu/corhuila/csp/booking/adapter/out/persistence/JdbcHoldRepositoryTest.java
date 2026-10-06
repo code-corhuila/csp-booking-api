@@ -207,6 +207,122 @@ class JdbcHoldRepositoryTest {
                         .total());
     }
 
+    @Test
+    void findOverdueHeldAnswersOnlyHeldPastTheirExpirationOldestFirst() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation newest = store(overdueHold(UUID.randomUUID(), seats("H1"), now.minusSeconds(610)));
+        Reservation oldest = store(overdueHold(UUID.randomUUID(), seats("H2"), now.minusSeconds(900)));
+        store(hold(seats("H3")));
+
+        List<Reservation> overdue = repository.findOverdueHeld(now, 10);
+
+        assertEquals(List.of(oldest.id(), newest.id()),
+                overdue.stream().map(Reservation::id).toList());
+    }
+
+    @Test
+    void findOverdueHeldRespectsTheBatchLimitAndLeavesTheRestForTheNextRun() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        store(overdueHold(UUID.randomUUID(), seats("I1"), now.minusSeconds(610)));
+        store(overdueHold(UUID.randomUUID(), seats("I2"), now.minusSeconds(620)));
+
+        assertEquals(1, repository.findOverdueHeld(now, 1).size());
+        assertEquals(2, repository.findOverdueHeld(now, 10).size());
+    }
+
+    @Test
+    void expireMovesTheReservationAndTheHoldAndReleasesTheSeats() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation overdue = store(overdueHold(UUID.randomUUID(), seats("J1", "J2"), now.minusSeconds(700)));
+
+        repository.expire(overdue.expire(now), now, CORRELATION);
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'EXPIRED'",
+                overdue.id()));
+        assertEquals(1, count("SELECT count(*) FROM booking.seat_hold WHERE id = ? AND status = 'EXPIRED'",
+                overdue.id()));
+        // RELEASED is what takes the seats out of uk_seat_hold_item_active_seat.
+        assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'RELEASED'",
+                overdue.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'HELD'",
+                overdue.id()));
+    }
+
+    @Test
+    void anExpiredHoldLetsAnotherClientHoldTheSameSeatAgain() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation first = store(overdueHold(showtime, seats("K1"), now.minusSeconds(700)));
+        repository.expire(first.expire(now), now, CORRELATION);
+
+        // The acceptance criterion: the held seats become available for new holds.
+        Reservation second = store(hold(UUID.randomUUID(), showtime, seats("K1"), "Movie", "Room 1"));
+
+        assertEquals(ReservationStatus.HELD, repository.findById(second.id()).orElseThrow().status());
+        assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE showtime_id = ? AND seat_number = 'K1'",
+                showtime));
+    }
+
+    @Test
+    void expireIsRefusedWhenTheHoldIsNotOverdueYet() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation fresh = store(hold(seats("L1")));
+
+        assertThrows(IllegalStateException.class,
+                () -> repository.expire(fresh.expire(now.plusSeconds(700)), now, CORRELATION));
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'HELD'",
+                fresh.id()));
+        assertEquals(1, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'HELD'",
+                fresh.id()));
+    }
+
+    @Test
+    void theExpiredEventCarriesTheInstantOfTheSweepAndItsCorrelationId() throws Exception {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation overdue = store(overdueHold(UUID.randomUUID(), seats("M1"), now.minusSeconds(700)));
+
+        repository.expire(overdue.expire(now), now, CORRELATION);
+
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", overdue.id()));
+        JsonNode event = MAPPER.readTree(scalar(
+                "SELECT payload::text FROM booking.outbox_event WHERE aggregate_id = ?", overdue.id()));
+        assertEquals("ReservationExpired", event.path("eventType").asText());
+        assertEquals("Reservation", event.path("aggregateType").asText());
+        assertEquals(overdue.id().toString(), event.path("aggregateId").asText());
+        assertEquals(CORRELATION, event.path("metadata").path("correlationId").asText());
+        assertEquals(now.toString(), event.path("occurredAt").asText());
+        assertEquals(overdue.expiresAt().toString(), event.path("payload").path("expiredAt").asText());
+    }
+
+    @Test
+    void aSecondSweepOverTheSameHoldChangesNothing() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation overdue = store(overdueHold(UUID.randomUUID(), seats("N1"), now.minusSeconds(700)));
+        repository.expire(overdue.expire(now), now, CORRELATION);
+
+        assertThrows(IllegalStateException.class,
+                () -> repository.expire(overdue.expire(now), now, CORRELATION));
+
+        assertEquals(1, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ?", overdue.id()));
+    }
+
+    private Reservation store(Reservation reservation) {
+        assertInstanceOf(CreateHoldResult.Created.class,
+                repository.create(command(reservation, newKey(), "hash-" + reservation.id())));
+        return reservation;
+    }
+
+    /** A hold created far enough in the past that its window closed before {@code now}. */
+    private Reservation overdueHold(UUID showtimeId, List<String> seats, Instant createdAt) {
+        Reservation reservation = Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), showtimeId, seats,
+                Duration.ofSeconds(600), createdAt, "Movie", "Room 1", 0);
+        writtenHolds.add(reservation.id());
+        return reservation;
+    }
+
     private Reservation hold(List<String> seats) {
         return hold(UUID.randomUUID(), UUID.randomUUID(), seats, "Movie", "Room 1");
     }
