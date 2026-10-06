@@ -202,6 +202,79 @@ class ReservationServiceTest {
         assertNull(holds.expired);
     }
 
+    @Test
+    void aHeldReservationOfTheCallerIsConfirmedAtTheClockAndTheTransitionIsPersisted() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+
+        Reservation confirmed = service.confirmReservation(USER, held.id(), CORRELATION);
+
+        assertEquals(ReservationStatus.CONFIRMED, confirmed.status());
+        assertEquals(NOW, confirmed.confirmedAt());
+        assertSame(confirmed, holds.confirmed);
+        assertEquals(CORRELATION, holds.confirmedCorrelation);
+    }
+
+    @Test
+    void theConfirmationInstantHasThePrecisionThePlatformStores() {
+        ReservationService withNanoseconds = new ReservationService(holds, Clock.fixed(NOW.plusNanos(123),
+                ZoneOffset.UTC));
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+
+        Reservation confirmed = withNanoseconds.confirmReservation(USER, held.id(), CORRELATION);
+
+        assertEquals(NOW, confirmed.confirmedAt());
+    }
+
+    @Test
+    void aReservationThatDoesNotExistCannotBeConfirmed() {
+        holds.found = Optional.empty();
+
+        assertThrows(ReservationNotFoundException.class,
+                () -> service.confirmReservation(USER, UUID.randomUUID(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void aReservationOfAnotherUserCannotBeConfirmedAndNothingIsWritten() {
+        holds.found = Optional.of(reservationOf(USER));
+
+        assertThrows(ReservationAccessDeniedException.class,
+                () -> service.confirmReservation(OTHER, UUID.randomUUID(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void aHoldPastItsExpirationCannotBeConfirmedEvenIfTheSweepDidNotRunYet() {
+        holds.found = Optional.of(Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0));
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservation(USER, UUID.randomUUID(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void anAlreadyConfirmedReservationCannotBeConfirmedAgain() {
+        Reservation confirmed = reservationOf(USER).confirm(NOW);
+        holds.found = Optional.of(confirmed);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservation(USER, confirmed.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void aSweepThatWinsTheRaceLeavesTheConfirmationRefused() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservation(USER, held.id(), CORRELATION));
+    }
+
     private String hashOf(CreateHoldInput request) {
         holds.stored = null;
         service.createHold(request);
@@ -242,6 +315,18 @@ class ReservationServiceTest {
         private List<Reservation> expired;
         private String expiredCorrelation;
         private UUID raceLostId;
+        private Reservation confirmed;
+        private String confirmedCorrelation;
+        private boolean confirmRaceLost;
+
+        @Override
+        public void confirm(Reservation confirmedReservation, Instant now, String correlationId) {
+            if (confirmRaceLost) {
+                throw new InvalidStatusTransitionException("a sweep won the race");
+            }
+            confirmed = confirmedReservation;
+            confirmedCorrelation = correlationId;
+        }
 
         @Override
         public CreateHoldResult create(CreateHoldCommand command) {
