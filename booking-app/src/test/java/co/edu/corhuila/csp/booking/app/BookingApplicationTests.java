@@ -90,6 +90,18 @@ class BookingApplicationTests {
     }
 
     @Test
+    void aConfirmationKeyOutsideTheBoundsOfTheContractIsA400BeforeAnythingReachesTheDatabase() {
+        HttpHeaders headers = headers(JWT_KEY.token(SUB));
+        headers.set("Idempotency-Key", "too-short");
+
+        ResponseEntity<String> answer = rest.postForEntity(
+                "/reservations/33333333-3333-3333-3333-333333333333/confirm", new HttpEntity<>(headers), String.class);
+
+        assertEquals(HttpStatus.BAD_REQUEST, answer.getStatusCode(), answer.getBody());
+        assertTrue(answer.getBody().contains("\"error\":\"VALIDATION_ERROR\""), answer.getBody());
+    }
+
+    @Test
     void theHealthOfTheContractAnswersBehindTheBaseOfTheService() {
         // /health on the root URI of TestRestTemplate is /api/v1/booking/health: the service owns
         // the prefix of booking-service.yaml and the filter keeps the route public behind it.

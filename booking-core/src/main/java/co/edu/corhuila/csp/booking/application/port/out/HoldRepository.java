@@ -38,6 +38,23 @@ public interface HoldRepository {
     ReservationPage findByUser(UUID userId, ReservationQuery query);
 
     /**
+     * Makes the confirmation durable: the reservation, its hold and every seat become CONFIRMED and
+     * the {@code BookingConfirmed} outbox event is written, all in one transaction (Norma 5.3.11).
+     * A confirmed seat stays inside {@code uk_seat_hold_item_active_seat}, so it can never be held again.
+     *
+     * <p>The statements keep a {@code status = 'HELD'} guard and the hold must not be past
+     * {@code now}, so a sweep that wins the race is never overwritten and the event is written
+     * exactly once.
+     *
+     * @param confirmed the reservation already transitioned by the domain to CONFIRMED
+     * @param now the instant the confirmation was decided on
+     * @param correlationId the correlation id of the request, written to the event metadata
+     * @throws co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException when the
+     *         reservation was no longer a HELD reservation inside its hold time
+     */
+    void confirm(Reservation confirmed, Instant now, String correlationId);
+
+    /**
      * HELD reservations past their expiration time, oldest expiration first, up to {@code limit}.
      * Used by the expiration sweep of csp-worker (HU-BOOKING-002).
      */

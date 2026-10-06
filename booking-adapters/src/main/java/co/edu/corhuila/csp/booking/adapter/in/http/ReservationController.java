@@ -25,9 +25,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The three routes of the reservation contract, under the base of {@code booking-service.yaml}:
- * the hold whose key decides 201 or 200 (Norma 5.3.8), and the two reads that only ever show the
- * reservations of the caller. Every other answer of the contract is produced by
+ * The four routes of the reservation contract, under the base of {@code booking-service.yaml}:
+ * the hold whose key decides 201 or 200 (Norma 5.3.8), its confirmation, and the two reads that
+ * only ever show the reservations of the caller. Every other answer of the contract is produced by
  * {@link ApiExceptionHandler}.
  */
 @RestController
@@ -54,6 +54,22 @@ public class ReservationController {
             return ResponseEntity.created(locationOf(http, reservation)).body(ReservationResponse.of(reservation));
         }
         return ResponseEntity.ok(ReservationResponse.of(reservation));
+    }
+
+    /**
+     * Confirms a HELD reservation of the caller. The transition itself is the guard against a
+     * repeated call: a reservation can be confirmed once and the event is written once, so a retry
+     * after the first success is answered 422 by the contract of this route
+     * ({@code booking-service.yaml}, {@code confirmReservation}). The key is required by the
+     * contract and bounded like the one of the hold.
+     */
+    @PostMapping("/reservations/{reservationId}/confirm")
+    ReservationResponse confirm(
+            @PathVariable UUID reservationId,
+            @RequestHeader("Idempotency-Key") @Size(min = 16, max = 100) String idempotencyKey,
+            HttpServletRequest http) {
+        return ReservationResponse.of(useCases.confirmReservation(
+                userIdOf(http), reservationId, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
     }
 
     /**
