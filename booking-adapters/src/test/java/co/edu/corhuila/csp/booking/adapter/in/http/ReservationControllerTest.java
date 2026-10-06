@@ -20,6 +20,7 @@ import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictEx
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationAccessDeniedException;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
@@ -268,6 +269,67 @@ class ReservationControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
                 .andExpect(jsonPath("$.message").value("the page starts at 1"));
+    }
+
+    @Test
+    void aConfirmationAnswers200WithTheConfirmedReservation() throws Exception {
+        Reservation confirmed = reservation().confirm(Instant.parse("2026-10-05T10:16:00Z"));
+        when(useCases.confirmReservation(any(UUID.class), eq(confirmed.id()), any())).thenReturn(confirmed);
+
+        mockMvc.perform(confirm(confirmed.id().toString(), KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(confirmed.id().toString()))
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
+                .andExpect(jsonPath("$.confirmedAt").isNotEmpty());
+
+        verify(useCases).confirmReservation(UUID.fromString(SUB), confirmed.id(), CORRELATION);
+    }
+
+    @Test
+    void aReservationThatCannotBeConfirmedIsA422WithTheTransitionCode() throws Exception {
+        when(useCases.confirmReservation(any(UUID.class), any(UUID.class), any()))
+                .thenThrow(new InvalidStatusTransitionException("the reservation cannot be confirmed from its current status"));
+
+        mockMvc.perform(confirm(UUID.randomUUID().toString(), KEY))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error").value("INVALID_STATUS_TRANSITION"))
+                .andExpect(jsonPath("$.message").value("the reservation cannot be confirmed from its current status"))
+                .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void confirmingAnUnknownReservationIsA404AndSomebodyElsesIsA403() throws Exception {
+        UUID unknown = UUID.randomUUID();
+        when(useCases.confirmReservation(any(UUID.class), eq(unknown), any()))
+                .thenThrow(new ReservationNotFoundException(unknown));
+        UUID foreign = UUID.randomUUID();
+        when(useCases.confirmReservation(any(UUID.class), eq(foreign), any()))
+                .thenThrow(new ReservationAccessDeniedException());
+
+        mockMvc.perform(confirm(unknown.toString(), KEY))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("NOT_FOUND"));
+        mockMvc.perform(confirm(foreign.toString(), KEY))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void anIdThatIsNotAUuidOrAMissingKeyIsA400() throws Exception {
+        mockMvc.perform(confirm("not-a-uuid", KEY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
+        mockMvc.perform(post("/reservations/" + UUID.randomUUID() + "/confirm")
+                        .requestAttr(JwtAuthenticationFilter.USER_ID_ATTRIBUTE, SUB))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
+    }
+
+    private static MockHttpServletRequestBuilder confirm(String reservationId, String idempotencyKey) {
+        return post("/reservations/" + reservationId + "/confirm")
+                .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
+                .header("Idempotency-Key", idempotencyKey)
+                .requestAttr(JwtAuthenticationFilter.USER_ID_ATTRIBUTE, SUB);
     }
 
     private static MockHttpServletRequestBuilder hold(String idempotencyKey, String body) {

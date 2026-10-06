@@ -24,6 +24,17 @@ public interface ReservationUseCases {
      */
     Reservation getReservation(UUID callerId, UUID reservationId);
 
+    /**
+     * Confirms a HELD reservation of the caller, all its seats at once (HU-BOOKING-003). A hold
+     * past its expiration time is refused even when the sweep did not release it yet.
+     *
+     * @param correlationId the correlation id of the request, written to the {@code BookingConfirmed} event
+     * @return the CONFIRMED reservation
+     * @throws co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException when the
+     *         reservation is expired or already confirmed
+     */
+    Reservation confirmReservation(UUID callerId, UUID reservationId, String correlationId);
+
     /** The page of the reservations of the caller, in the window and filters of the request. */
     ReservationPage listReservations(UUID callerId, ReservationQuery query);
 
