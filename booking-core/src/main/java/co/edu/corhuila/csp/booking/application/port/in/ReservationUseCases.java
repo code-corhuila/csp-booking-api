@@ -1,6 +1,7 @@
 package co.edu.corhuila.csp.booking.application.port.in;
 
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.ExpireHoldsResult;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
@@ -25,4 +26,13 @@ public interface ReservationUseCases {
 
     /** The page of the reservations of the caller, in the window and filters of the request. */
     ReservationPage listReservations(UUID callerId, ReservationQuery query);
+
+    /**
+     * Expires HELD reservations past their hold time (HU-BOOKING-002). Called by csp-worker through
+     * the internal maintenance endpoint, never by a client.
+     *
+     * @param correlationId the correlation id of the sweep run, written to every outbox event
+     * @return how many reservations were expired in this run
+     */
+    ExpireHoldsResult expireHolds(int batchSize, String correlationId);
 }

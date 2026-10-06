@@ -10,10 +10,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationAccessDeniedException;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
@@ -22,6 +24,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -127,6 +130,78 @@ class ReservationServiceTest {
         assertNull(holds.stored);
     }
 
+    @Test
+    void theExpirationSweepQueriesOverdueHoldsAndExpiresThemWithTheCorrelationId() {
+        Reservation overdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+        holds.overdue = List.of(overdue);
+
+        var result = service.expireHolds(100, CORRELATION);
+
+        assertEquals(1, result.expired());
+        assertEquals(0, result.remaining());
+        assertEquals(CORRELATION, holds.expiredCorrelation);
+        // The domain returns a new aggregate in EXPIRED: the same id, the same seats, and the
+        // instant the sweep decided on. What reaches the repository is the transition, never the
+        // stored HELD instance.
+        Reservation expired = holds.expired.get(0);
+        assertEquals(overdue.id(), expired.id());
+        assertEquals(ReservationStatus.EXPIRED, expired.status());
+        assertEquals(overdue.seatLabels(), expired.seatLabels());
+    }
+
+    @Test
+    void aHoldThatIsNotOverdueIsRefusedByTheDomainAndNeverReachesTheEngine() {
+        Reservation notYetOverdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", 0);
+        holds.overdue = List.of(notYetOverdue);
+
+        assertThrows(InvalidStatusTransitionException.class, () -> service.expireHolds(100, CORRELATION));
+
+        assertNull(holds.expired);
+    }
+
+    @Test
+    void theExpirationSweepReportsRemainingOverdueForTheNextRun() {
+        Reservation overdue1 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+        Reservation overdue2 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+        holds.overdue = List.of(overdue1, overdue2);
+
+        var result = service.expireHolds(1, CORRELATION);
+
+        assertEquals(1, result.expired());
+        assertEquals(1, result.remaining());
+    }
+
+    @Test
+    void aHoldThatAConfirmationWonDoesNotAbortTheRestOfTheBatch() {
+        Reservation lost = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+        Reservation next = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+        holds.overdue = List.of(lost, next);
+        holds.raceLostId = lost.id();
+
+        var result = service.expireHolds(100, CORRELATION);
+
+        assertEquals(1, result.expired());
+        assertEquals(1, holds.expired.size());
+        assertEquals(next.id(), holds.expired.get(0).id());
+    }
+
+    @Test
+    void theExpirationSweepWithNoOverdueHoldsDoesNothing() {
+        holds.overdue = List.of();
+
+        var result = service.expireHolds(100, CORRELATION);
+
+        assertEquals(0, result.expired());
+        assertEquals(0, result.remaining());
+        assertNull(holds.expired);
+    }
+
     private String hashOf(CreateHoldInput request) {
         holds.stored = null;
         service.createHold(request);
@@ -163,6 +238,10 @@ class ReservationServiceTest {
         private UUID askedById;
         private UUID askedForUser;
         private ReservationQuery askedWith;
+        private List<Reservation> overdue = List.of();
+        private List<Reservation> expired;
+        private String expiredCorrelation;
+        private UUID raceLostId;
 
         @Override
         public CreateHoldResult create(CreateHoldCommand command) {
@@ -181,6 +260,28 @@ class ReservationServiceTest {
             askedForUser = userId;
             askedWith = query;
             return page;
+        }
+
+        @Override
+        public List<Reservation> findOverdueHeld(Instant now, int limit) {
+            return overdue.stream().limit(limit).toList();
+        }
+
+        @Override
+        public void expire(Reservation expiredReservation, Instant now, String correlationId) {
+            if (expiredReservation.id().equals(raceLostId)) {
+                throw new HoldNoLongerOverdueException("a confirmation won the race");
+            }
+            if (expired == null) {
+                expired = new ArrayList<>();
+            }
+            expired.add(expiredReservation);
+            expiredCorrelation = correlationId;
+            // An expired reservation is no longer overdue: the sweep must not see it twice. It is
+            // matched by id because the domain returns a new instance in EXPIRED.
+            overdue = overdue.stream()
+                    .filter(candidate -> !candidate.id().equals(expiredReservation.id()))
+                    .toList();
         }
     }
 }
