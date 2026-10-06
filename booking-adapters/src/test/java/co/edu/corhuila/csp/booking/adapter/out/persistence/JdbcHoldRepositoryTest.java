@@ -8,8 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariConfig;
@@ -19,6 +22,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
@@ -155,18 +159,74 @@ class JdbcHoldRepositoryTest {
                 taken.showtimeId()));
     }
 
+    @Test
+    void findByIdAnswersWithTheReservationOfAnyOwnerOrWithNothing() {
+        Reservation reservation = hold(seats("E1"));
+        assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(reservation, newKey(), "hash-e")));
+
+        assertEquals(reservation, repository.findById(reservation.id()).orElseThrow());
+        assertTrue(repository.findById(UUID.randomUUID()).isEmpty());
+    }
+
+    @Test
+    void findByUserKeepsOnlyThatUserNewestFirstAndPaginates() {
+        UUID user = UUID.randomUUID();
+        for (String seat : List.of("F1", "F2", "F3")) {
+            repository.create(command(hold(user, seats(seat)), newKey(), "hash-" + seat));
+        }
+        repository.create(command(hold(seats("F1")), newKey(), "hash-stranger"));
+
+        ReservationPage all = repository.findByUser(user, new ReservationQuery(1, 10, null, null));
+        assertEquals(3, all.total());
+        assertEquals(3, all.items().size());
+        assertTrue(all.items().stream().allMatch(item -> item.userId().equals(user)));
+        List<Instant> newestFirst = all.items().stream().map(Reservation::createdAt).toList();
+        assertEquals(newestFirst, newestFirst.stream().sorted(Comparator.reverseOrder()).toList());
+
+        ReservationPage firstPage = repository.findByUser(user, new ReservationQuery(1, 2, null, null));
+        ReservationPage secondPage = repository.findByUser(user, new ReservationQuery(2, 2, null, null));
+        assertEquals(3, firstPage.total());
+        assertEquals(2, firstPage.items().size());
+        assertEquals(1, secondPage.items().size());
+    }
+
+    @Test
+    void findByUserFiltersByStatusAndKeepsOnlyWhatWasCreatedBeforeTheInstant() {
+        UUID user = UUID.randomUUID();
+        Reservation held = hold(user, seats("G1"));
+        assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(held, newKey(), "hash-g")));
+
+        assertEquals(0,
+                repository.findByUser(user, new ReservationQuery(1, 10, ReservationStatus.CONFIRMED, null)).total());
+        assertEquals(1, repository.findByUser(user, new ReservationQuery(1, 10, ReservationStatus.HELD, null)).total());
+        assertEquals(0,
+                repository.findByUser(user, new ReservationQuery(1, 10, null, held.createdAt().minusSeconds(1)))
+                        .total());
+        assertEquals(1,
+                repository.findByUser(user, new ReservationQuery(1, 10, null, held.createdAt().plusSeconds(1)))
+                        .total());
+    }
+
     private Reservation hold(List<String> seats) {
-        return hold(UUID.randomUUID(), seats, "Movie", "Room 1");
+        return hold(UUID.randomUUID(), UUID.randomUUID(), seats, "Movie", "Room 1");
     }
 
     private Reservation hold(List<String> seats, String movieTitle, String roomName) {
-        return hold(UUID.randomUUID(), seats, movieTitle, roomName);
+        return hold(UUID.randomUUID(), UUID.randomUUID(), seats, movieTitle, roomName);
+    }
+
+    private Reservation hold(UUID userId, List<String> seats) {
+        return hold(userId, UUID.randomUUID(), seats, "Movie", "Room 1");
     }
 
     private Reservation hold(UUID showtimeId, List<String> seats, String movieTitle, String roomName) {
+        return hold(UUID.randomUUID(), showtimeId, seats, movieTitle, roomName);
+    }
+
+    private Reservation hold(UUID userId, UUID showtimeId, List<String> seats, String movieTitle, String roomName) {
         // PostgreSQL keeps microseconds: an instant with nanoseconds would not round-trip.
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
-        Reservation reservation = Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), showtimeId, seats,
+        Reservation reservation = Reservation.hold(UUID.randomUUID(), userId, showtimeId, seats,
                 Duration.ofSeconds(600), now, movieTitle, roomName, 0);
         writtenHolds.add(reservation.id());
         return reservation;
@@ -174,6 +234,10 @@ class JdbcHoldRepositoryTest {
 
     private static List<String> seats(String... labels) {
         return List.of(labels);
+    }
+
+    private static String newKey() {
+        return UUID.randomUUID().toString();
     }
 
     private static CreateHoldCommand command(Reservation reservation, String key, String requestHash) {
