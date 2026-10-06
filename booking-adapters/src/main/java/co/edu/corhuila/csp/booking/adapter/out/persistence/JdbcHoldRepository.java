@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.adapter.out.persistence;
 
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
@@ -42,6 +43,7 @@ public class JdbcHoldRepository implements HoldRepository {
 
     private static final String AGGREGATE_TYPE = "Reservation";
     private static final String EVENT_TYPE = "ReservationHeld";
+    private static final String EXPIRED_EVENT_TYPE = "ReservationExpired";
     private static final String EVENT_SOURCE = "booking-service";
 
     private static final String INSERT_SEAT_HOLD = """
@@ -142,6 +144,47 @@ public class JdbcHoldRepository implements HoldRepository {
                 RESERVATION_SELECT + where + GROUP_BY_RESERVATION + NEWEST_FIRST + " LIMIT ? OFFSET ?",
                 this::toReservation, arguments.toArray());
         return new ReservationPage(items, total);
+    }
+
+    @Override
+    public List<Reservation> findOverdueHeld(Instant now, int limit) {
+        return jdbc.query(
+                RESERVATION_SELECT + "WHERE r.status = 'HELD' AND h.expires_at < ?"
+                        + GROUP_BY_RESERVATION + " ORDER BY h.expires_at ASC LIMIT ?",
+                this::toReservation, at(now), limit);
+    }
+
+    @Override
+    public void expire(Reservation expired, Instant now, String correlationId) {
+        String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation));
+    }
+
+    /**
+     * Releases the hold in one transaction. The three updates are what make the seats available
+     * again: the partial unique index {@code uk_seat_hold_item_active_seat} only covers the seats
+     * whose status is HELD or CONFIRMED, so a seat only becomes available for a new hold when its
+     * row leaves that set. Every statement carries a {@code status = 'HELD'} guard, so a
+     * confirmation that won the race is never overwritten and a sweep that runs twice is a no-op.
+     */
+    private void release(Reservation expired, Instant now, String correlationId) {
+        int expiredReservations = jdbc.update("""
+                UPDATE booking.reservation r SET status = 'EXPIRED'
+                WHERE r.id = ?
+                  AND r.status = 'HELD'
+                  AND EXISTS (SELECT 1 FROM booking.seat_hold h
+                              WHERE h.id = r.hold_id
+                                AND h.expires_at <= ?)""",
+                expired.id(), at(now));
+        if (expiredReservations == 0) {
+            throw new HoldNoLongerOverdueException(
+                    "the reservation " + expired.id() + " is no longer an overdue HELD reservation");
+        }
+        jdbc.update("UPDATE booking.seat_hold SET status = 'EXPIRED' WHERE id = ? AND status = 'HELD'",
+                expired.id());
+        jdbc.update("UPDATE booking.seat_hold_item SET status = 'RELEASED' WHERE hold_id = ? AND status = 'HELD'",
+                expired.id());
+        insertExpiredOutboxEvent(expired, now, correlationId);
     }
 
     /**
@@ -305,6 +348,50 @@ public class JdbcHoldRepository implements HoldRepository {
     private static Instant instant(ResultSet rs, String column) throws SQLException {
         OffsetDateTime value = rs.getObject(column, OffsetDateTime.class);
         return value == null ? null : value.toInstant();
+    }
+
+    /**
+     * Writes the {@code ReservationExpired} outbox event in the same transaction as the release
+     * (Norma 5.3.11). The envelope follows the same shape as {@code ReservationHeld}, but both
+     * {@code occurredAt} and the row timestamp are the instant of the sweep, not the creation of
+     * the hold: that is when the fact the event reports actually happened.
+     */
+    private void insertExpiredOutboxEvent(Reservation expired, Instant now, String correlationId) {
+        UUID eventId = UUID.randomUUID();
+        String envelope;
+        try {
+            envelope = objectMapper.writeValueAsString(expiredEnvelopeOf(eventId, expired, now, correlationId));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("the outbox event of the expiration cannot be serialized", exception);
+        }
+        jdbc.update(INSERT_OUTBOX_EVENT, eventId, AGGREGATE_TYPE, expired.id(), EXPIRED_EVENT_TYPE, envelope,
+                at(now));
+    }
+
+    private Map<String, Object> expiredEnvelopeOf(UUID eventId, Reservation expired, Instant now,
+            String correlationId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", expired.id().toString());
+        payload.put("userId", expired.userId().toString());
+        payload.put("showtimeId", expired.showtimeId().toString());
+        payload.put("seatNumbers", expired.seatLabels());
+        payload.put("expiredAt", expired.expiresAt().toString());
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("correlationId", correlationId);
+        metadata.put("causationId", null);
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("eventId", eventId.toString());
+        envelope.put("eventType", EXPIRED_EVENT_TYPE);
+        envelope.put("occurredAt", now.toString());
+        envelope.put("version", 1);
+        envelope.put("source", EVENT_SOURCE);
+        envelope.put("aggregateId", expired.id().toString());
+        envelope.put("aggregateType", AGGREGATE_TYPE);
+        envelope.put("payload", payload);
+        envelope.put("metadata", metadata);
+        return envelope;
     }
 
     private record StoredKey(UUID holdId, String requestHash) {
