@@ -1,6 +1,8 @@
 package co.edu.corhuila.csp.booking.application.port.out;
 
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -34,4 +36,27 @@ public interface HoldRepository {
      * tiebreaker, in the window the contract asks for.
      */
     ReservationPage findByUser(UUID userId, ReservationQuery query);
+
+    /**
+     * HELD reservations past their expiration time, oldest expiration first, up to {@code limit}.
+     * Used by the expiration sweep of csp-worker (HU-BOOKING-002).
+     */
+    List<Reservation> findOverdueHeld(Instant now, int limit);
+
+    /**
+     * Releases an expired hold: the reservation and its hold become EXPIRED and the held seats
+     * become RELEASED, which is what makes them available for new holds (the partial unique index
+     * {@code uk_seat_hold_item_active_seat} only covers HELD and CONFIRMED seats). All of it and the
+     * {@code ReservationExpired} outbox event happen in one transaction (Norma 5.3.11).
+     *
+     * <p>The statements keep a {@code status = 'HELD'} guard so a concurrent confirmation that wins
+     * the race is never overwritten, and the reservation is only expired when its hold really is
+     * past {@code now}, so the invariant is enforced by the engine and not only by the caller.
+     *
+     * @param expired the reservation already transitioned by the domain to EXPIRED
+     * @param now the instant the sweep decided on
+     * @param correlationId the correlation id of the sweep run, written to the event metadata
+     * @throws HoldNoLongerOverdueException when the hold was no longer HELD at {@code now}
+     */
+    void expire(Reservation expired, Instant now, String correlationId);
 }

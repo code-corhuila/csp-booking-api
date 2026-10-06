@@ -18,6 +18,7 @@ import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Date;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -47,7 +48,8 @@ class JwtAuthenticationFilterTest {
         KeyPair serviceKey = generator.generateKeyPair();
         KeyPair otherKey = generator.generateKeyPair();
         JwtAuthenticationFilter filter =
-                new JwtAuthenticationFilter((RSAPublicKey) serviceKey.getPublic(), new ObjectMapper());
+                new JwtAuthenticationFilter((RSAPublicKey) serviceKey.getPublic(), new ObjectMapper(),
+                        Set.of("csp-worker"));
         this.mockMvc = MockMvcBuilders.standaloneSetup(new ProbeController())
                 .addFilters(new CorrelationIdFilter(), filter)
                 .build();
@@ -161,6 +163,52 @@ class JwtAuthenticationFilterTest {
         assertEquals(SUB, result.getRequest().getAttribute(JwtAuthenticationFilter.USER_ID_ATTRIBUTE));
     }
 
+    @Test
+    void aServiceTokenCallsAnInternalOperation() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+
+        mockMvc.perform(get("/internal/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void aClientTokenCallingAnInternalOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, validClaims());
+
+        mockMvc.perform(get("/internal/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aServiceTokenCallingAClientOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+
+        mockMvc.perform(get("/holds")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aSubjectOutsideTheServiceListCannotCallAnInternalOperation() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("booking-service"));
+
+        mockMvc.perform(get("/internal/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    private static JWTClaimsSet claimsOf(String subject) {
+        return new JWTClaimsSet.Builder()
+                .subject(subject)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .build();
+    }
+
     private static JWTClaimsSet validClaims() {
         return new JWTClaimsSet.Builder()
                 .subject(SUB)
@@ -180,6 +228,11 @@ class JwtAuthenticationFilterTest {
         @GetMapping("/holds")
         String hold() {
             return "held";
+        }
+
+        @GetMapping("/internal/probe")
+        String internal() {
+            return "internal";
         }
 
         @GetMapping("/health")
