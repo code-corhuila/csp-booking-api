@@ -1,5 +1,4 @@
 # This service only. csp-infra includes this file to compose the platform.
-# The variables of the database and the JWT key are added by the pull requests that make the service read them.
 name: csp-booking-api
 
 services:
@@ -13,6 +12,11 @@ services:
       # The service refuses to start without one of the two.
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
       JWT_PUBLIC_KEY_FILE: ${JWT_PUBLIC_KEY_FILE:-}
+      # Database of this domain (Annex J.5). Compose refuses to start without them, so a missing
+      # value is reported by name instead of failing inside the JVM.
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?set SPRING_DATASOURCE_URL in .env or in the platform}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set SPRING_DATASOURCE_USERNAME in .env or in the platform}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env or in the platform}
     # expose, not ports: only the gateway is reachable from the host.
     expose: ["8083"]
     networks: [platform]
