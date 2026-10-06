@@ -12,8 +12,8 @@ lifecycle (`HELD`, `CONFIRMED`, `EXPIRED`). It is the only writer of the `bookin
 publisher of booking events, which it writes to the outbox table in the same transaction as the change.
 Catalog owns movies, rooms and showtimes; Auth owns identity; Ticketing and Concessions consume the events.
 
-The repository currently holds the **base scaffold only**. The service is built in small steps; each step is a
-Pull Request that leaves the repository coherent.
+The service is built in small steps; each step is a Pull Request that leaves the repository coherent. The first one
+implements **HU-BOOKING-001**: the temporary hold of seats and the two reads of the reservations of the caller.
 
 ## Stack
 
@@ -52,9 +52,35 @@ docker build -f deploy/Dockerfile -t csp-booking-api .
 docker run --rm -e PORT=8083 -p 8083:8083 csp-booking-api
 ```
 
-The log ends with `Started BookingApplication` when the service is up. The service has no route yet. In the platform,
+The log ends with `Started BookingApplication` when the service is up. In the platform,
 `csp-infra` includes `deploy/compose.yml`, which exposes the port on the `platform` network without publishing it:
 only the gateway reaches the service. Copy `.env.example` to `.env` for local values and never commit `.env`.
+
+## API
+
+The routes are served under `/api/v1/booking`, the base `booking-service.yaml` opens with
+(`server.servlet.context-path`), and every answer carries the `X-Correlation-Id` of the request.
+
+| Route | Answer |
+|---|---|
+| `GET /health` | Liveness, independent of PostgreSQL |
+| `GET /health/ready` | Readiness: `503` while the database cannot be reached |
+| `POST /holds` | Creates the hold: `201` with the Location, `200` when the key replays, then `400`/`401`/`409`/`422`/`500`/`503` |
+| `GET /reservations/{reservationId}` | One reservation of the caller (`403` for another user's, `404` when it does not exist) |
+| `GET /reservations` | Page of the caller, newest first: `page`, `limit`, `status`, `createdBefore` |
+
+```bash
+curl http://localhost:8083/api/v1/booking/health
+curl -X POST http://localhost:8083/api/v1/booking/holds \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Idempotency-Key: 7f0b2f0e-9d5c-4a6a-9a1b-3f0c9d8e7b6a' \
+  -d '{"showtimeId":"<uuid>","seatLabels":["A1"],"movieTitle":"Movie","roomName":"Room 1"}'
+```
+
+The token is a JWT signed with RS256 whose `sub` is the id of the user; `csp-infra` `dev-token.sh` hands one out for
+local work (ADR-020). Every error is the envelope of the contract: `error`, `message`, the `details` that name the
+fields that broke a validation, and `traceId`.
 
 ## Related repositories
 
