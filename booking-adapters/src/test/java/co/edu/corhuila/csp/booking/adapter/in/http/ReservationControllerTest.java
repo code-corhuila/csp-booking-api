@@ -3,6 +3,7 @@ package co.edu.corhuila.csp.booking.adapter.in.http;
 import static org.hamcrest.Matchers.endsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -16,8 +17,13 @@ import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
+import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import co.edu.corhuila.csp.booking.domain.model.ReservationAccessDeniedException;
+import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
+import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -146,10 +152,17 @@ class ReservationControllerTest {
 
     @Test
     void anUnknownRouteAnswersTheEnvelopeOfTheContract() throws Exception {
-        mockMvc.perform(get("/reservations/no-such-one").header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION))
+        mockMvc.perform(get("/no-such-route").header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void anIdOfTheRouteThatIsNotAUuidIsA400() throws Exception {
+        mockMvc.perform(read("/reservations/no-such-one"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
     }
 
     @Test
@@ -172,6 +185,91 @@ class ReservationControllerTest {
                 .andExpect(jsonPath("$.message").value("Internal server error"));
     }
 
+    @Test
+    void aReservationOfTheCallerIsAnsweredByItsId() throws Exception {
+        Reservation reservation = reservation();
+        when(useCases.getReservation(UUID.fromString(SUB), reservation.id())).thenReturn(reservation);
+
+        mockMvc.perform(read("/reservations/" + reservation.id()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(reservation.id().toString()))
+                .andExpect(jsonPath("$.userId").value(SUB))
+                .andExpect(jsonPath("$.status").value("HELD"))
+                .andExpect(jsonPath("$.seatLabels[0]").value("A1"));
+    }
+
+    @Test
+    void theReservationOfAnotherUserIsA403() throws Exception {
+        when(useCases.getReservation(any(UUID.class), any(UUID.class)))
+                .thenThrow(new ReservationAccessDeniedException());
+
+        mockMvc.perform(read("/reservations/" + UUID.randomUUID()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.message").value("the reservation belongs to another user"));
+    }
+
+    @Test
+    void anUnknownReservationIsA404() throws Exception {
+        UUID missing = UUID.randomUUID();
+        when(useCases.getReservation(any(UUID.class), any(UUID.class)))
+                .thenThrow(new ReservationNotFoundException(missing));
+
+        mockMvc.perform(read("/reservations/" + missing))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("reservation " + missing + " not found"));
+    }
+
+    @Test
+    void theListIsThePageTheCallerAskedForWithTheMetaOfTheContract() throws Exception {
+        when(useCases.listReservations(any(UUID.class), any(ReservationQuery.class)))
+                .thenReturn(new ReservationPage(List.of(reservation(), reservation()), 42L));
+
+        mockMvc.perform(read("/reservations").param("page", "2").param("limit", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].status").value("HELD"))
+                .andExpect(jsonPath("$.meta.page").value(2))
+                .andExpect(jsonPath("$.meta.limit").value(3))
+                .andExpect(jsonPath("$.meta.total").value(42))
+                .andExpect(jsonPath("$.meta.totalPages").value(14));
+    }
+
+    @Test
+    void theFiltersOfTheListReachTheUseCaseAndAnEmptyPageIsANormalAnswer() throws Exception {
+        when(useCases.listReservations(any(UUID.class), any(ReservationQuery.class)))
+                .thenReturn(new ReservationPage(List.of(), 0L));
+
+        mockMvc.perform(read("/reservations").param("status", "HELD").param("createdBefore", "2026-10-05T10:00:00Z"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").isEmpty())
+                .andExpect(jsonPath("$.meta.total").value(0))
+                .andExpect(jsonPath("$.meta.totalPages").value(0));
+
+        ArgumentCaptor<ReservationQuery> query = ArgumentCaptor.forClass(ReservationQuery.class);
+        verify(useCases).listReservations(eq(UUID.fromString(SUB)), query.capture());
+        assertEquals(1, query.getValue().page());
+        assertEquals(20, query.getValue().limit());
+        assertEquals(ReservationStatus.HELD, query.getValue().status());
+        assertEquals(Instant.parse("2026-10-05T10:00:00Z"), query.getValue().createdBefore());
+    }
+
+    @Test
+    void aStatusTheContractDoesNotKnowIsA400() throws Exception {
+        mockMvc.perform(read("/reservations").param("status", "CANCELLED"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void aPageOutsideTheBoundsOfTheContractIsA400AndNotA500() throws Exception {
+        mockMvc.perform(read("/reservations").param("page", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("the page starts at 1"));
+    }
+
     private static MockHttpServletRequestBuilder hold(String idempotencyKey, String body) {
         return post("/holds")
                 .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
@@ -179,6 +277,12 @@ class ReservationControllerTest {
                 .requestAttr(JwtAuthenticationFilter.USER_ID_ATTRIBUTE, SUB)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body);
+    }
+
+    private static MockHttpServletRequestBuilder read(String path) {
+        return get(path)
+                .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
+                .requestAttr(JwtAuthenticationFilter.USER_ID_ATTRIBUTE, SUB);
     }
 
     private static Reservation reservation() {
