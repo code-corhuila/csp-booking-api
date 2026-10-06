@@ -8,6 +8,7 @@ import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictEx
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -44,6 +45,7 @@ public class JdbcHoldRepository implements HoldRepository {
     private static final String AGGREGATE_TYPE = "Reservation";
     private static final String EVENT_TYPE = "ReservationHeld";
     private static final String EXPIRED_EVENT_TYPE = "ReservationExpired";
+    private static final String CONFIRMED_EVENT_TYPE = "BookingConfirmed";
     private static final String EVENT_SOURCE = "booking-service";
 
     private static final String INSERT_SEAT_HOLD = """
@@ -158,6 +160,38 @@ public class JdbcHoldRepository implements HoldRepository {
     public void expire(Reservation expired, Instant now, String correlationId) {
         String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
         transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation));
+    }
+
+    @Override
+    public void confirm(Reservation confirmed, Instant now, String correlationId) {
+        String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        transactionTemplate.executeWithoutResult(status -> settle(confirmed, now, correlation));
+    }
+
+    /**
+     * Confirms the hold in one transaction. The seats keep their place in
+     * {@code uk_seat_hold_item_active_seat} (it covers HELD and CONFIRMED), so they stay taken. The
+     * first statement is the guard: only a HELD reservation whose hold is still open can be
+     * confirmed, so a sweep that won the race, or a second confirmation, changes nothing and writes
+     * no event.
+     */
+    private void settle(Reservation confirmed, Instant now, String correlationId) {
+        int confirmedReservations = jdbc.update("""
+                UPDATE booking.reservation r SET status = 'CONFIRMED', confirmed_at = ?
+                WHERE r.id = ?
+                  AND r.status = 'HELD'
+                  AND EXISTS (SELECT 1 FROM booking.seat_hold h
+                              WHERE h.id = r.hold_id
+                                AND h.expires_at > ?)""",
+                at(confirmed.confirmedAt()), confirmed.id(), at(now));
+        if (confirmedReservations == 0) {
+            throw new InvalidStatusTransitionException("the reservation cannot be confirmed from its current status");
+        }
+        jdbc.update("UPDATE booking.seat_hold SET status = 'CONFIRMED' WHERE id = ? AND status = 'HELD'",
+                confirmed.id());
+        jdbc.update("UPDATE booking.seat_hold_item SET status = 'CONFIRMED' WHERE hold_id = ? AND status = 'HELD'",
+                confirmed.id());
+        insertConfirmedOutboxEvent(confirmed, now, correlationId);
     }
 
     /**
@@ -392,6 +426,45 @@ public class JdbcHoldRepository implements HoldRepository {
         envelope.put("payload", payload);
         envelope.put("metadata", metadata);
         return envelope;
+    }
+
+    /**
+     * Writes the {@code BookingConfirmed} outbox event in the transaction of the confirmation
+     * (Norma 5.3.11). {@code showtimeStartsAt} is null while the service runs without a Catalog
+     * snapshot (Cut 2, events.md of this service).
+     */
+    private void insertConfirmedOutboxEvent(Reservation confirmed, Instant now, String correlationId) {
+        UUID eventId = UUID.randomUUID();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", confirmed.id().toString());
+        payload.put("userId", confirmed.userId().toString());
+        payload.put("showtimeId", confirmed.showtimeId().toString());
+        payload.put("movieTitle", confirmed.movieTitleSnapshot());
+        payload.put("roomName", confirmed.roomNameSnapshot());
+        payload.put("seatNumbers", confirmed.seatLabels());
+        payload.put("showtimeStartsAt", null);
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("correlationId", correlationId);
+        metadata.put("causationId", null);
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("eventId", eventId.toString());
+        envelope.put("eventType", CONFIRMED_EVENT_TYPE);
+        envelope.put("occurredAt", now.toString());
+        envelope.put("version", 1);
+        envelope.put("source", EVENT_SOURCE);
+        envelope.put("aggregateId", confirmed.id().toString());
+        envelope.put("aggregateType", AGGREGATE_TYPE);
+        envelope.put("payload", payload);
+        envelope.put("metadata", metadata);
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(envelope);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("the outbox event of the confirmation cannot be serialized", exception);
+        }
+        jdbc.update(INSERT_OUTBOX_EVENT, eventId, AGGREGATE_TYPE, confirmed.id(), CONFIRMED_EVENT_TYPE, json, at(now));
     }
 
     private record StoredKey(UUID holdId, String requestHash) {

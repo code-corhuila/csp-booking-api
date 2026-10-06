@@ -11,6 +11,7 @@ import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictEx
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,6 +21,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -310,6 +312,89 @@ class JdbcHoldRepositoryTest {
         assertEquals(1, count("""
                 SELECT count(*) FROM booking.outbox_event
                 WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", overdue.id()));
+    }
+
+    @Test
+    void confirmMovesTheReservationTheHoldAndEverySeatInOneTransaction() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation held = store(hold(seats("P1", "P2")));
+
+        repository.confirm(held.confirm(now), now, CORRELATION);
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'CONFIRMED' AND confirmed_at = ?",
+                held.id(), OffsetDateTime.ofInstant(now, ZoneOffset.UTC)));
+        assertEquals(1, count("SELECT count(*) FROM booking.seat_hold WHERE id = ? AND status = 'CONFIRMED'", held.id()));
+        assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'CONFIRMED'",
+                held.id()));
+        assertEquals(Instant.class, repository.findById(held.id()).orElseThrow().confirmedAt().getClass());
+    }
+
+    @Test
+    void aConfirmedSeatStaysTakenForAnyOtherHold() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation held = store(hold(showtime, seats("Q1"), "Movie", "Room 1"));
+        repository.confirm(held.confirm(now), now, CORRELATION);
+
+        assertThrows(BusinessRuleViolationException.class,
+                () -> repository.create(command(hold(showtime, seats("Q1"), "Movie", "Room 1"), newKey(), "hash-q")));
+    }
+
+    @Test
+    void theConfirmedEventCarriesTheSnapshotTheCorrelationIdAndNoStartTime() throws Exception {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation held = store(hold(seats("R1", "R2"), "Another Movie", "Room 9"));
+
+        repository.confirm(held.confirm(now), now, CORRELATION);
+
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", held.id()));
+        JsonNode event = MAPPER.readTree(scalar("""
+                SELECT payload::text FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", held.id()));
+        assertEquals("BookingConfirmed", event.path("eventType").asText());
+        assertEquals(now.toString(), event.path("occurredAt").asText());
+        assertEquals(CORRELATION, event.path("metadata").path("correlationId").asText());
+        assertEquals(held.id().toString(), event.path("payload").path("reservationId").asText());
+        assertEquals(held.userId().toString(), event.path("payload").path("userId").asText());
+        assertEquals(held.showtimeId().toString(), event.path("payload").path("showtimeId").asText());
+        assertEquals("Another Movie", event.path("payload").path("movieTitle").asText());
+        assertEquals("Room 9", event.path("payload").path("roomName").asText());
+        assertEquals("R1", event.path("payload").path("seatNumbers").get(0).asText());
+        assertTrue(event.path("payload").path("showtimeStartsAt").isNull());
+    }
+
+    @Test
+    void confirmIsRefusedForAHoldThatIsPastItsExpirationEvenIfItIsStillHeld() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation overdue = store(overdueHold(UUID.randomUUID(), seats("S1"), now.minusSeconds(700)));
+        Reservation forced = new Reservation(overdue.id(), overdue.userId(), overdue.showtimeId(), overdue.seatLabels(),
+                ReservationStatus.CONFIRMED, overdue.expiresAt(), overdue.movieTitleSnapshot(),
+                overdue.roomNameSnapshot(), overdue.totalAmount(), overdue.createdAt(), now);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.confirm(forced, now, CORRELATION));
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'HELD'", overdue.id()));
+        assertEquals(0, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", overdue.id()));
+    }
+
+    @Test
+    void aSecondConfirmationWritesNoSecondEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation held = store(hold(seats("T1")));
+        Reservation confirmed = held.confirm(now);
+        repository.confirm(confirmed, now, CORRELATION);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.confirm(confirmed, now, CORRELATION));
+
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", held.id()));
     }
 
     private Reservation store(Reservation reservation) {

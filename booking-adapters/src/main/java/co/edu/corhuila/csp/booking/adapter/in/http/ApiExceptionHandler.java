@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.adapter.in.http;
 
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.ReservationAccessDeniedException;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -100,6 +101,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(BusinessRuleViolationException.class)
     ResponseEntity<ErrorResponse> unprocessable(BusinessRuleViolationException exception) {
         return answer(HttpStatus.UNPROCESSABLE_ENTITY, "BUSINESS_RULE_VIOLATION", exception.getMessage(), null);
+    }
+
+    /** 422: the status rules forbid the change, for example confirming an expired reservation. */
+    @ExceptionHandler(InvalidStatusTransitionException.class)
+    ResponseEntity<ErrorResponse> invalidTransition(InvalidStatusTransitionException exception) {
+        return answer(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS_TRANSITION", exception.getMessage(), null);
     }
 
     /** 503: the database cannot be reached, the dependency of this service is unavailable. */

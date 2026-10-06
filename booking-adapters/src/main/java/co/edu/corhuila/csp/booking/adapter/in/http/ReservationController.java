@@ -25,9 +25,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The three routes of the reservation contract, under the base of {@code booking-service.yaml}:
- * the hold whose key decides 201 or 200 (Norma 5.3.8), and the two reads that only ever show the
- * reservations of the caller. Every other answer of the contract is produced by
+ * The four routes of the reservation contract, under the base of {@code booking-service.yaml}:
+ * the hold whose key decides 201 or 200 (Norma 5.3.8), its confirmation, and the two reads that
+ * only ever show the reservations of the caller. Every other answer of the contract is produced by
  * {@link ApiExceptionHandler}.
  */
 @RestController
@@ -54,6 +54,26 @@ public class ReservationController {
             return ResponseEntity.created(locationOf(http, reservation)).body(ReservationResponse.of(reservation));
         }
         return ResponseEntity.ok(ReservationResponse.of(reservation));
+    }
+
+    /**
+     * Confirms a HELD reservation of the caller. The transition itself is the guard against a
+     * repeated call: a reservation can be confirmed once and the event is written once.
+     *
+     * <p>Unlike {@code POST /holds}, the key is only checked for its shape (required, 16 to 100
+     * characters, as the contract says) and is never stored or compared: this route does not replay
+     * the original 200. A retry after the first success is answered 422 and cannot be told apart
+     * from a reservation that is expired or confirmed. Replaying would need the key to be stored by
+     * {@code csp-booking-db}, which {@code booking.idempotency_key} does not allow today (one row
+     * per hold).
+     */
+    @PostMapping("/reservations/{reservationId}/confirm")
+    ReservationResponse confirm(
+            @PathVariable UUID reservationId,
+            @RequestHeader("Idempotency-Key") @Size(min = 16, max = 100) String idempotencyKey,
+            HttpServletRequest http) {
+        return ReservationResponse.of(useCases.confirmReservation(
+                userIdOf(http), reservationId, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
     }
 
     /**

@@ -24,8 +24,8 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * The use cases of the reservation aggregate: the hold, the expiration sweep and the two reads the
- * contract exposes. It depends only on the domain and on the ports, and it asks the clock for the
+ * The use cases of the reservation aggregate: the hold, its confirmation, the expiration sweep and
+ * the two reads the contract exposes. It depends only on the domain and on the ports, and it asks the clock for the
  * time so the expiry of a hold can be verified without waiting for it.
  */
 public class ReservationService implements ReservationUseCases {
@@ -58,6 +58,17 @@ public class ReservationService implements ReservationUseCases {
                 .orElseThrow(() -> new ReservationNotFoundException(reservationId));
         reservation.requireOwner(callerId);
         return reservation;
+    }
+
+    @Override
+    public Reservation confirmReservation(UUID callerId, UUID reservationId, String correlationId) {
+        Reservation reservation = getReservation(callerId, reservationId);
+        // The platform stores microseconds: the answer must show the instant the row keeps.
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        // The domain decides the transition; the repository only persists it and guards the race.
+        Reservation confirmed = reservation.confirm(now);
+        holds.confirm(confirmed, now, correlationId);
+        return confirmed;
     }
 
     @Override
