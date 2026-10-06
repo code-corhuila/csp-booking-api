@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.adapter.out.persistence;
 
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
@@ -176,7 +177,7 @@ public class JdbcHoldRepository implements HoldRepository {
                                 AND h.expires_at <= ?)""",
                 expired.id(), at(now));
         if (expiredReservations == 0) {
-            throw new IllegalStateException(
+            throw new HoldNoLongerOverdueException(
                     "the reservation " + expired.id() + " is no longer an overdue HELD reservation");
         }
         jdbc.update("UPDATE booking.seat_hold SET status = 'EXPIRED' WHERE id = ? AND status = 'HELD'",

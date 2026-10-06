@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
@@ -175,6 +176,22 @@ class ReservationServiceTest {
     }
 
     @Test
+    void aHoldThatAConfirmationWonDoesNotAbortTheRestOfTheBatch() {
+        Reservation lost = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+        Reservation next = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+        holds.overdue = List.of(lost, next);
+        holds.raceLostId = lost.id();
+
+        var result = service.expireHolds(100, CORRELATION);
+
+        assertEquals(1, result.expired());
+        assertEquals(1, holds.expired.size());
+        assertEquals(next.id(), holds.expired.get(0).id());
+    }
+
+    @Test
     void theExpirationSweepWithNoOverdueHoldsDoesNothing() {
         holds.overdue = List.of();
 
@@ -224,6 +241,7 @@ class ReservationServiceTest {
         private List<Reservation> overdue = List.of();
         private List<Reservation> expired;
         private String expiredCorrelation;
+        private UUID raceLostId;
 
         @Override
         public CreateHoldResult create(CreateHoldCommand command) {
@@ -251,6 +269,9 @@ class ReservationServiceTest {
 
         @Override
         public void expire(Reservation expiredReservation, Instant now, String correlationId) {
+            if (expiredReservation.id().equals(raceLostId)) {
+                throw new HoldNoLongerOverdueException("a confirmation won the race");
+            }
             if (expired == null) {
                 expired = new ArrayList<>();
             }

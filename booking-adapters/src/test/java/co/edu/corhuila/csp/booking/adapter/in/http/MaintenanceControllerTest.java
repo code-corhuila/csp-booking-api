@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.adapter.in.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -11,6 +12,7 @@ import static org.mockito.Mockito.when;
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
 import co.edu.corhuila.csp.booking.application.port.out.ExpireHoldsResult;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
@@ -53,6 +55,15 @@ class MaintenanceControllerTest {
                 .andReturn();
 
         verify(useCases).expireHolds(100, CORRELATION);
+    }
+
+    @Test
+    void theExpiredCountDoesNotStayInTheLogContextOfTheThread() {
+        when(useCases.expireHolds(anyInt(), anyString())).thenReturn(new ExpireHoldsResult(5, 2));
+
+        controller.expireHolds(CORRELATION);
+
+        assertNull(MDC.get("expired"));
     }
 
     @Test

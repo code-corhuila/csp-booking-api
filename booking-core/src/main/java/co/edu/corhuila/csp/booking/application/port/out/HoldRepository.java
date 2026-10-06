@@ -56,7 +56,7 @@ public interface HoldRepository {
      * @param expired the reservation already transitioned by the domain to EXPIRED
      * @param now the instant the sweep decided on
      * @param correlationId the correlation id of the sweep run, written to the event metadata
-     * @throws IllegalStateException when the hold was no longer HELD at {@code now}
+     * @throws HoldNoLongerOverdueException when the hold was no longer HELD at {@code now}
      */
     void expire(Reservation expired, Instant now, String correlationId);
 }

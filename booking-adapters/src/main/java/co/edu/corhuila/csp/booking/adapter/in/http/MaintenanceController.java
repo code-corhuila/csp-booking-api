@@ -11,7 +11,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Internal maintenance operations called by csp-worker, never routed by the gateway. The worker
- * authenticates with its service token; a client token receives 403 (Norma 5.7.4).
+ * authenticates with its service token; {@link JwtAuthenticationFilter} answers 403 to a client
+ * token before this controller runs (Norma 5.7.4).
  */
 @RestController
 @RequestMapping("/internal/maintenance")
@@ -32,7 +33,11 @@ public class MaintenanceController {
             @RequestHeader("X-Correlation-Id") String correlationId) {
         ExpireHoldsResult result = useCases.expireHolds(100, correlationId);
         MDC.put("expired", String.valueOf(result.expired()));
-        return ResponseEntity.ok(new ExpireHoldsResponse(result.expired(), result.remaining()));
+        try {
+            return ResponseEntity.ok(new ExpireHoldsResponse(result.expired(), result.remaining()));
+        } finally {
+            MDC.remove("expired");
+        }
     }
 
     /**
