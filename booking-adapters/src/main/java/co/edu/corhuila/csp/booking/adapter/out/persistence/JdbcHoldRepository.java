@@ -201,9 +201,9 @@ public class JdbcHoldRepository implements HoldRepository {
             }
         } catch (DuplicateKeyException seatIsTaken) {
             // The only constraint these rows can break is uk_seat_hold_item_active_seat: the
-            // no-double-booking rule of the domain, enforced by the database itself.
-            throw new BusinessRuleViolationException(
-                    "at least one requested seat is already HELD or CONFIRMED for this showtime");
+            // no-double-booking rule of the domain, enforced by the database itself. The message
+            // is the example booking-service.yaml gives for the 422 of this route.
+            throw new BusinessRuleViolationException("one or more seats are not available");
         }
     }
 

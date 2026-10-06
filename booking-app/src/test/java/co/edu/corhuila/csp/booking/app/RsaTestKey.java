@@ -1,10 +1,18 @@
 package co.edu.corhuila.csp.booking.app;
 
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
+import java.util.Date;
 
 /**
  * A throwaway RSA key pair for the tests: no key material of the service is committed to this
@@ -36,5 +44,23 @@ final class RsaTestKey {
 
     RSAPublicKey publicKey() {
         return (RSAPublicKey) keyPair.getPublic();
+    }
+
+    /**
+     * A token signed with this pair for the caller of a test: exactly what {@code dev-token.sh}
+     * of {@code csp-infra} hands out until the identity service exists.
+     */
+    String token(String subject) {
+        try {
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                    .subject(subject)
+                    .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                    .build();
+            SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+            jwt.sign(new RSASSASigner((RSAPrivateKey) keyPair.getPrivate()));
+            return jwt.serialize();
+        } catch (JOSEException exception) {
+            throw new IllegalStateException("the token of the test could not be signed", exception);
+        }
     }
 }

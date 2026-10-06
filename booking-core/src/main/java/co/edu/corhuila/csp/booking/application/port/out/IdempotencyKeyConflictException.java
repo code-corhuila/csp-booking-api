@@ -7,6 +7,7 @@ package co.edu.corhuila.csp.booking.application.port.out;
 public class IdempotencyKeyConflictException extends RuntimeException {
 
     public IdempotencyKeyConflictException() {
-        super("the Idempotency-Key was already used with another payload");
+        // The message of the example booking-service.yaml gives for this 409.
+        super("Idempotency key has already been used with a different payload");
     }
 }

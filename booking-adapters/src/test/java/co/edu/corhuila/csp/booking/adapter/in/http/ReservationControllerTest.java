@@ -1,0 +1,188 @@
+package co.edu.corhuila.csp.booking.adapter.in.http;
+
+import static org.hamcrest.Matchers.endsWith;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
+import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
+import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
+import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+/**
+ * {@code POST /holds} with every answer {@code booking-service.yaml} declares around it: 201, the
+ * 200 of the replay, 400, 404 of an unknown route, 409, 422, 500 and 503. The caller is already
+ * authenticated here; the token filter that protects the route has its own tests and the route
+ * itself is checked end to end in the application tests.
+ */
+class ReservationControllerTest {
+
+    private static final String SUB = "11111111-1111-4111-8111-111111111111";
+    private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
+    private static final String KEY = "6b1f0d2e-4a3c-4f1a-9c2d-8e7f6a5b4c3d";
+    private static final UUID SHOWTIME = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final String BODY = """
+            {"showtimeId":"33333333-3333-3333-3333-333333333333","seatLabels":["A1","A2"],\
+            "movieTitle":"Movie","roomName":"Room 1"}""";
+
+    private ReservationUseCases useCases;
+    private MockMvc mockMvc;
+
+    @BeforeEach
+    void setUp() {
+        useCases = mock(ReservationUseCases.class);
+        mockMvc = MockMvcBuilders.standaloneSetup(new ReservationController(useCases))
+                .addFilters(new CorrelationIdFilter())
+                .setControllerAdvice(new ApiExceptionHandler())
+                .build();
+    }
+
+    @Test
+    void aHoldTheServiceMakesAnswers201WithTheLocationOfTheReservation() throws Exception {
+        Reservation created = reservation();
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(created));
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", endsWith("/reservations/" + created.id())))
+                .andExpect(jsonPath("$.id").value(created.id().toString()))
+                .andExpect(jsonPath("$.userId").value(SUB))
+                .andExpect(jsonPath("$.showtimeId").value(SHOWTIME.toString()))
+                .andExpect(jsonPath("$.status").value("HELD"))
+                .andExpect(jsonPath("$.seatLabels[0]").value("A1"))
+                .andExpect(jsonPath("$.seatLabels[1]").value("A2"))
+                .andExpect(jsonPath("$.movieTitleSnapshot").value("Movie"))
+                .andExpect(jsonPath("$.roomNameSnapshot").value("Room 1"))
+                .andExpect(jsonPath("$.totalAmount").value(0))
+                // The shape of the instants is the date-time of the contract; it is asserted
+                // against the configuration the service boots with in the application tests.
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty())
+                .andExpect(jsonPath("$.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.confirmedAt").doesNotExist());
+
+        ArgumentCaptor<CreateHoldInput> input = ArgumentCaptor.forClass(CreateHoldInput.class);
+        verify(useCases).createHold(input.capture());
+        assertEquals(UUID.fromString(SUB), input.getValue().userId());
+        assertEquals(KEY, input.getValue().idempotencyKey());
+        assertEquals(CORRELATION, input.getValue().correlationId());
+        assertEquals(600, input.getValue().holdDurationSeconds());
+    }
+
+    @Test
+    void aKeyThatAlreadyMadeThisHoldAnswers200WithTheOriginalReservation() throws Exception {
+        Reservation original = reservation();
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Replayed(original));
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist("Location"))
+                .andExpect(jsonPath("$.id").value(original.id().toString()))
+                .andExpect(jsonPath("$.status").value("HELD"));
+    }
+
+    @Test
+    void aBodyWithoutTheShowtimeIsA400ThatNamesTheField() throws Exception {
+        mockMvc.perform(hold(KEY, "{\"seatLabels\":[\"A1\"],\"movieTitle\":\"Movie\",\"roomName\":\"Room 1\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("Invalid input data"))
+                .andExpect(jsonPath("$.details[0].field").value("showtimeId"))
+                .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void aDurationOutsideTheRangeOfTheContractIsA400() throws Exception {
+        String body = BODY.replace("\"roomName\":\"Room 1\"", "\"roomName\":\"Room 1\",\"holdDurationSeconds\":30");
+
+        mockMvc.perform(hold(KEY, body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.details[0].field").value("holdDurationSeconds"));
+    }
+
+    @Test
+    void aSeatAnotherClientHoldsIsA422WithTheMessageOfTheContract() throws Exception {
+        when(useCases.createHold(any()))
+                .thenThrow(new BusinessRuleViolationException("one or more seats are not available"));
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error").value("BUSINESS_RULE_VIOLATION"))
+                .andExpect(jsonPath("$.message").value("one or more seats are not available"))
+                .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void aKeyUsedWithAnotherPayloadIsA409() throws Exception {
+        when(useCases.createHold(any())).thenThrow(new IdempotencyKeyConflictException());
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("CONFLICT"))
+                .andExpect(jsonPath("$.message").value("Idempotency key has already been used with a different payload"));
+    }
+
+    @Test
+    void anUnknownRouteAnswersTheEnvelopeOfTheContract() throws Exception {
+        mockMvc.perform(get("/reservations/no-such-one").header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void aDatabaseThatCannotBeReachedIsA503() throws Exception {
+        when(useCases.createHold(any())).thenThrow(new CannotGetJdbcConnectionException("connection refused"));
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error").value("SERVICE_UNAVAILABLE"))
+                .andExpect(jsonPath("$.message").value("A required service or dependency is unavailable"));
+    }
+
+    @Test
+    void anUnexpectedFailureIsA500WithTheEnvelopeAndNoStackTrace() throws Exception {
+        when(useCases.createHold(any())).thenThrow(new IllegalStateException("boom"));
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error").value("INTERNAL_ERROR"))
+                .andExpect(jsonPath("$.message").value("Internal server error"));
+    }
+
+    private static MockHttpServletRequestBuilder hold(String idempotencyKey, String body) {
+        return post("/holds")
+                .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
+                .header("Idempotency-Key", idempotencyKey)
+                .requestAttr(JwtAuthenticationFilter.USER_ID_ATTRIBUTE, SUB)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body);
+    }
+
+    private static Reservation reservation() {
+        return Reservation.hold(UUID.randomUUID(), UUID.fromString(SUB), SHOWTIME, List.of("A1", "A2"),
+                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", 0);
+    }
+}

@@ -135,6 +135,20 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
+    void aTokenWhoseSubjectIsNotAnIdOfThisPlatformIsRejected() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("client-7")
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .build();
+
+        String token = rs256Token(servicePrivateKey, claims);
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
     void aValidTokenIdentifiesTheCallerAsItsSubject() throws Exception {
         String token = rs256Token(servicePrivateKey, validClaims());
 
