@@ -1,0 +1,262 @@
+package co.edu.corhuila.csp.booking.adapter.out.persistence;
+
+import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
+import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
+import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
+import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
+import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.Reservation;
+import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.sql.Array;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionTemplate;
+
+/**
+ * The SQL of a hold: the hold, its seats, the reservation, its seats, the idempotency key and the
+ * outbox event of one request in a single transaction (Norma 5.3.8 and 5.3.11). The database
+ * itself refuses a second active hold of the same seat and a second use of the same key, so two
+ * concurrent clients cannot double-book or double-charge a retry.
+ */
+@Repository
+public class JdbcHoldRepository implements HoldRepository {
+
+    private static final String AGGREGATE_TYPE = "Reservation";
+    private static final String EVENT_TYPE = "ReservationHeld";
+    private static final String EVENT_SOURCE = "booking-service";
+
+    private static final String INSERT_SEAT_HOLD = """
+            INSERT INTO booking.seat_hold
+                (id, user_id, showtime_id, status, movie_title_snapshot, room_name_snapshot,
+                 showtime_starts_at, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            """;
+
+    private static final String INSERT_IDEMPOTENCY_KEY = """
+            INSERT INTO booking.idempotency_key ("key", hold_id, request_hash)
+            VALUES (?, ?, ?)
+            ON CONFLICT (key) DO NOTHING
+            """;
+
+    private static final String INSERT_HOLD_ITEM = """
+            INSERT INTO booking.seat_hold_item (hold_id, showtime_id, seat_number, status)
+            VALUES (?, ?, ?, 'HELD')
+            """;
+
+    private static final String INSERT_RESERVATION = """
+            INSERT INTO booking.reservation
+                (id, hold_id, user_id, showtime_id, status, total_amount, created_at, confirmed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """;
+
+    private static final String INSERT_RESERVATION_SEAT = """
+            INSERT INTO booking.reservation_seat (reservation_id, seat_number)
+            VALUES (?, ?)
+            """;
+
+    private static final String INSERT_OUTBOX_EVENT = """
+            INSERT INTO booking.outbox_event
+                (id, aggregate_type, aggregate_id, event_type, payload, created_at)
+            VALUES (?, ?, ?, ?, ?::jsonb, ?)
+            """;
+
+    private static final String FIND_STORED_KEY = """
+            SELECT hold_id, request_hash FROM booking.idempotency_key WHERE "key" = ?
+            """;
+
+    /** The reservation and its snapshots: one row per seat aggregated into the labels of the hold. */
+    private static final String FIND_BY_HOLD = """
+            SELECT r.id AS id, r.user_id AS user_id, r.showtime_id AS showtime_id, r.status AS status,
+                   r.total_amount AS total_amount, r.created_at AS created_at, r.confirmed_at AS confirmed_at,
+                   h.movie_title_snapshot AS movie_title_snapshot, h.room_name_snapshot AS room_name_snapshot,
+                   h.expires_at AS expires_at,
+                   array_agg(s.seat_number ORDER BY s.seat_number) AS seat_labels
+            FROM booking.reservation r
+            JOIN booking.seat_hold h ON h.id = r.hold_id
+            JOIN booking.reservation_seat s ON s.reservation_id = r.id
+            WHERE r.hold_id = ?
+            GROUP BY r.id, h.id
+            """;
+
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate transactionTemplate;
+    private final ObjectMapper objectMapper;
+
+    public JdbcHoldRepository(JdbcTemplate jdbc, PlatformTransactionManager transactionManager,
+            ObjectMapper objectMapper) {
+        this.jdbc = jdbc;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.objectMapper = objectMapper;
+    }
+
+    @Override
+    public CreateHoldResult create(CreateHoldCommand command) {
+        return transactionTemplate.execute(status -> insert(command, status));
+    }
+
+    /** The reservation of a hold, with its snapshots and its seats in request-independent order. */
+    Optional<Reservation> findByHoldId(UUID holdId) {
+        List<Reservation> found = jdbc.query(FIND_BY_HOLD, this::toReservation, holdId);
+        return found.stream().findFirst();
+    }
+
+    private CreateHoldResult insert(CreateHoldCommand command, TransactionStatus status) {
+        Reservation reservation = command.reservation();
+        insertSeatHold(reservation);
+        if (!insertIdempotencyKey(command)) {
+            // The key belongs to an earlier request: undo this hold and answer from the stored row.
+            status.setRollbackOnly();
+            return originalOf(command);
+        }
+        insertHoldItems(reservation);
+        insertReservation(reservation);
+        insertReservationSeats(reservation);
+        insertOutboxEvent(command, reservation);
+        return new CreateHoldResult.Created(reservation);
+    }
+
+    private void insertSeatHold(Reservation reservation) {
+        jdbc.update(INSERT_SEAT_HOLD, reservation.id(), reservation.userId(), reservation.showtimeId(),
+                reservation.status().name(), reservation.movieTitleSnapshot(), reservation.roomNameSnapshot(),
+                at(reservation.expiresAt()), at(reservation.createdAt()));
+    }
+
+    /** @return false when the key was already used: this call created nothing worth keeping. */
+    private boolean insertIdempotencyKey(CreateHoldCommand command) {
+        int rows = jdbc.update(INSERT_IDEMPOTENCY_KEY, command.idempotencyKey(),
+                command.reservation().id(), command.requestHash());
+        return rows == 1;
+    }
+
+    private void insertHoldItems(Reservation reservation) {
+        try {
+            for (String seat : reservation.seatLabels()) {
+                jdbc.update(INSERT_HOLD_ITEM, reservation.id(), reservation.showtimeId(), seat);
+            }
+        } catch (DuplicateKeyException seatIsTaken) {
+            // The only constraint these rows can break is uk_seat_hold_item_active_seat: the
+            // no-double-booking rule of the domain, enforced by the database itself.
+            throw new BusinessRuleViolationException(
+                    "at least one requested seat is already HELD or CONFIRMED for this showtime");
+        }
+    }
+
+    private void insertReservation(Reservation reservation) {
+        jdbc.update(INSERT_RESERVATION, reservation.id(), reservation.id(), reservation.userId(),
+                reservation.showtimeId(), reservation.status().name(), reservation.totalAmount(),
+                at(reservation.createdAt()), at(reservation.confirmedAt()));
+    }
+
+    private void insertReservationSeats(Reservation reservation) {
+        for (String seat : reservation.seatLabels()) {
+            jdbc.update(INSERT_RESERVATION_SEAT, reservation.id(), seat);
+        }
+    }
+
+    private void insertOutboxEvent(CreateHoldCommand command, Reservation reservation) {
+        UUID eventId = UUID.randomUUID();
+        String envelope;
+        try {
+            envelope = objectMapper.writeValueAsString(envelopeOf(eventId, command, reservation));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("the outbox event of the hold cannot be serialized", exception);
+        }
+        jdbc.update(INSERT_OUTBOX_EVENT, eventId, AGGREGATE_TYPE, reservation.id(), EVENT_TYPE, envelope,
+                at(reservation.createdAt()));
+    }
+
+    /**
+     * The envelope of the platform with the correlation id of the request (ADR-008, events.md of
+     * this service). csp-worker publishes it as it is, with the id of the row as messageId.
+     */
+    private Map<String, Object> envelopeOf(UUID eventId, CreateHoldCommand command, Reservation reservation) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.id().toString());
+        payload.put("userId", reservation.userId().toString());
+        payload.put("showtimeId", reservation.showtimeId().toString());
+        payload.put("seatNumbers", reservation.seatLabels());
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("correlationId", command.correlationId());
+        metadata.put("causationId", null);
+
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("eventId", eventId.toString());
+        envelope.put("eventType", EVENT_TYPE);
+        envelope.put("occurredAt", reservation.createdAt().toString());
+        envelope.put("version", 1);
+        envelope.put("source", EVENT_SOURCE);
+        envelope.put("aggregateId", reservation.id().toString());
+        envelope.put("aggregateType", AGGREGATE_TYPE);
+        envelope.put("payload", payload);
+        envelope.put("metadata", metadata);
+        return envelope;
+    }
+
+    /** A replay answers with the original reservation, and a key with another payload is a 409. */
+    private CreateHoldResult originalOf(CreateHoldCommand command) {
+        StoredKey stored = jdbc.query(FIND_STORED_KEY, rs -> rs.next()
+                ? new StoredKey(rs.getObject("hold_id", UUID.class), rs.getString("request_hash"))
+                : null, command.idempotencyKey());
+        if (stored == null) {
+            throw new IllegalStateException("the stored idempotency key disappeared: " + command.idempotencyKey());
+        }
+        if (!stored.requestHash().equals(command.requestHash())) {
+            throw new IdempotencyKeyConflictException();
+        }
+        Reservation original = findByHoldId(stored.holdId())
+                .orElseThrow(() -> new IllegalStateException("the hold of the idempotency key has no reservation"));
+        return new CreateHoldResult.Replayed(original);
+    }
+
+    private Reservation toReservation(ResultSet rs, int rowNum) throws SQLException {
+        Array seats = rs.getArray("seat_labels");
+        List<String> labels = seats == null
+                ? List.of()
+                : Arrays.stream((String[]) seats.getArray()).toList();
+        return new Reservation(
+                rs.getObject("id", UUID.class),
+                rs.getObject("user_id", UUID.class),
+                rs.getObject("showtime_id", UUID.class),
+                labels,
+                ReservationStatus.valueOf(rs.getString("status")),
+                instant(rs, "expires_at"),
+                rs.getString("movie_title_snapshot"),
+                rs.getString("room_name_snapshot"),
+                rs.getLong("total_amount"),
+                instant(rs, "created_at"),
+                instant(rs, "confirmed_at"));
+    }
+
+    /**
+     * The driver cannot infer a type for {@link Instant}, and an offset keeps the instant absolute
+     * whatever the time zone of the machine or of the session is.
+     */
+    private static OffsetDateTime at(Instant instant) {
+        return instant == null ? null : OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
+    }
+
+    private static Instant instant(ResultSet rs, String column) throws SQLException {
+        OffsetDateTime value = rs.getObject(column, OffsetDateTime.class);
+        return value == null ? null : value.toInstant();
+    }
+
+    private record StoredKey(UUID holdId, String requestHash) {
+    }
+}
