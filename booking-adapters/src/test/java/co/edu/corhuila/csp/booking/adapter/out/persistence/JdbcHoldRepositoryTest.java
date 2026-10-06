@@ -288,7 +288,8 @@ class JdbcHoldRepositoryTest {
                 SELECT count(*) FROM booking.outbox_event
                 WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", overdue.id()));
         JsonNode event = MAPPER.readTree(scalar(
-                "SELECT payload::text FROM booking.outbox_event WHERE aggregate_id = ?", overdue.id()));
+                "SELECT payload::text FROM booking.outbox_event WHERE aggregate_id = ? AND event_type = 'ReservationExpired'",
+                overdue.id()));
         assertEquals("ReservationExpired", event.path("eventType").asText());
         assertEquals("Reservation", event.path("aggregateType").asText());
         assertEquals(overdue.id().toString(), event.path("aggregateId").asText());
@@ -306,7 +307,9 @@ class JdbcHoldRepositoryTest {
         assertThrows(IllegalStateException.class,
                 () -> repository.expire(overdue.expire(now), now, CORRELATION));
 
-        assertEquals(1, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ?", overdue.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", overdue.id()));
     }
 
     private Reservation store(Reservation reservation) {
