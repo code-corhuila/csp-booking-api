@@ -58,10 +58,14 @@ public class ReservationController {
 
     /**
      * Confirms a HELD reservation of the caller. The transition itself is the guard against a
-     * repeated call: a reservation can be confirmed once and the event is written once, so a retry
-     * after the first success is answered 422 by the contract of this route
-     * ({@code booking-service.yaml}, {@code confirmReservation}). The key is required by the
-     * contract and bounded like the one of the hold.
+     * repeated call: a reservation can be confirmed once and the event is written once.
+     *
+     * <p>Unlike {@code POST /holds}, the key is only checked for its shape (required, 16 to 100
+     * characters, as the contract says) and is never stored or compared: this route does not replay
+     * the original 200. A retry after the first success is answered 422 and cannot be told apart
+     * from a reservation that is expired or confirmed. Replaying would need the key to be stored by
+     * {@code csp-booking-db}, which {@code booking.idempotency_key} does not allow today (one row
+     * per hold).
      */
     @PostMapping("/reservations/{reservationId}/confirm")
     ReservationResponse confirm(
