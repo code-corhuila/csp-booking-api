@@ -24,11 +24,12 @@ server:
     # /health behind it, so the same process works with and without the gateway.
     context-path: /api/v1/booking
   shutdown: graceful                  # stop accepting new requests, let the running ones finish
+  # Explicit capacity limits and their values (Norma 5.3.10): an undeclared default means "no limit".
   tomcat:
     connection-timeout: 5s            # time to receive the request line and headers
     keep-alive-timeout: 60s           # idle connection
     threads:
-      max: 200
+      max: 200                        # concurrent requests before the rest queue
 logging:
   structured:
     format:
