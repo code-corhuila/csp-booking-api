@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import co.edu.corhuila.csp.booking.adapter.in.http.AuthenticatedCallerArgumentResolver;
 import co.edu.corhuila.csp.booking.adapter.in.http.CorrelationIdFilter;
 import co.edu.corhuila.csp.booking.adapter.in.http.JwtAuthenticationFilter;
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
@@ -21,6 +22,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class BookingApplicationTests {
@@ -61,6 +63,12 @@ class BookingApplicationTests {
     void theServiceValidatesTheTokenWithItsOwnPublicKey() {
         assertNotNull(context.getBean(JwtAuthenticationFilter.class));
         assertNotNull(context.getBean(RSAPublicKey.class));
+    }
+
+    @Test
+    void theControllersReceiveTheCallerFromTheResolverOfTheAdapter() {
+        assertTrue(context.getBean(RequestMappingHandlerAdapter.class).getArgumentResolvers().stream()
+                .anyMatch(AuthenticatedCallerArgumentResolver.class::isInstance));
     }
 
     @Test
