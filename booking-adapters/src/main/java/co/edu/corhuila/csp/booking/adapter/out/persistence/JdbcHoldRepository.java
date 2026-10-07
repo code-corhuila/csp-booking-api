@@ -73,8 +73,8 @@ public class JdbcHoldRepository implements HoldRepository {
             """;
 
     private static final String INSERT_RESERVATION_SEAT = """
-            INSERT INTO booking.reservation_seat (reservation_id, seat_number)
-            VALUES (?, ?)
+            INSERT INTO booking.reservation_seat (reservation_id, hold_id, seat_number)
+            VALUES (?, ?, ?)
             """;
 
     private static final String INSERT_OUTBOX_EVENT = """
@@ -292,7 +292,9 @@ public class JdbcHoldRepository implements HoldRepository {
 
     private void insertReservationSeats(Reservation reservation) {
         for (String seat : reservation.seatLabels()) {
-            jdbc.update(INSERT_RESERVATION_SEAT, reservation.id(), seat);
+            // A reservation is created with id = hold_id (see insertReservation); the schema ties the
+            // seat to that hold and to one of its items.
+            jdbc.update(INSERT_RESERVATION_SEAT, reservation.id(), reservation.id(), seat);
         }
     }
 
