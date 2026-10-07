@@ -62,6 +62,7 @@ class ReservationControllerTest {
         useCases = mock(ReservationUseCases.class);
         mockMvc = MockMvcBuilders.standaloneSetup(new ReservationController(useCases))
                 .addFilters(new CorrelationIdFilter())
+                .setCustomArgumentResolvers(new AuthenticatedCallerArgumentResolver())
                 .setControllerAdvice(new ApiExceptionHandler())
                 .build();
     }
