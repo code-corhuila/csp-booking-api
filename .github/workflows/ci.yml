@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: code-corhuila/csp-booking-db
-          ref: a44b3f36ded046a4cd222e3919af22d503a603e5
+          ref: 10740a0b41cf1cd277dd15e36fb2a4837a88cf3e
           path: csp-booking-db
           ssh-key: ${{ secrets.DB_DEPLOY_KEY }}
       - name: Apply the booking schema

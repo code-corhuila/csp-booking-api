@@ -90,7 +90,8 @@ class JdbcHoldRepositoryTest {
         assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ?", reservation.id()));
         assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND hold_id = ? AND total_amount = 0",
                 reservation.id(), reservation.id()));
-        assertEquals(2, count("SELECT count(*) FROM booking.reservation_seat WHERE reservation_id = ?", reservation.id()));
+        assertEquals(2, count("SELECT count(*) FROM booking.reservation_seat WHERE reservation_id = ? AND hold_id = ?",
+                reservation.id(), reservation.id()));
         assertEquals("hash-one", scalar("SELECT request_hash FROM booking.idempotency_key WHERE hold_id = ?", reservation.id()));
 
         assertEquals(1, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ? AND event_type = 'ReservationHeld'",
