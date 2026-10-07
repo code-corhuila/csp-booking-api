@@ -53,7 +53,8 @@ docker run --rm -e PORT=8083 -p 8083:8083 csp-booking-api
 ```
 
 The log ends with `Started BookingApplication` when the service is up. In the platform,
-`csp-infra` includes `deploy/compose.yml`, which exposes the port on the `platform` network without publishing it:
+`csp-infra-postgres` (the platform composition and the PostgreSQL instance this service needs) includes
+`deploy/compose.yml`, which exposes the port on the `platform` network without publishing it:
 only the gateway reaches the service. Copy `.env.example` to `.env` for local values and never commit `.env`.
 
 ## API
@@ -78,7 +79,7 @@ curl -X POST http://localhost:8083/api/v1/booking/holds \
   -d '{"showtimeId":"<uuid>","seatLabels":["A1"],"movieTitle":"Movie","roomName":"Room 1"}'
 ```
 
-The token is a JWT signed with RS256 whose `sub` is the id of the user; `csp-infra` `dev-token.sh` hands one out for
+The token is a JWT signed with RS256 whose `sub` is the id of the user; `dev-token.sh` of `csp-infra-postgres` hands one out for
 local work (ADR-020). Every error is the envelope of the contract: `error`, `message`, the `details` that name the
 fields that broke a validation, and `traceId`.
 

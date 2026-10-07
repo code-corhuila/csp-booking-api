@@ -201,13 +201,15 @@ class ReservationControllerTest {
 
     @Test
     void theReservationOfAnotherUserIsA403() throws Exception {
+        UUID foreign = UUID.randomUUID();
         when(useCases.getReservation(any(UUID.class), any(UUID.class)))
-                .thenThrow(new ReservationAccessDeniedException());
+                .thenThrow(new ReservationAccessDeniedException(foreign, UUID.fromString(SUB)));
 
-        mockMvc.perform(read("/reservations/" + UUID.randomUUID()))
+        mockMvc.perform(read("/reservations/" + foreign))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error").value("FORBIDDEN"))
-                .andExpect(jsonPath("$.message").value("the reservation belongs to another user"));
+                .andExpect(jsonPath("$.message").value(
+                        "reservation " + foreign + " belongs to another user (caller " + SUB + ")"));
     }
 
     @Test
@@ -304,7 +306,7 @@ class ReservationControllerTest {
                 .thenThrow(new ReservationNotFoundException(unknown));
         UUID foreign = UUID.randomUUID();
         when(useCases.confirmReservation(any(UUID.class), eq(foreign), any()))
-                .thenThrow(new ReservationAccessDeniedException());
+                .thenThrow(new ReservationAccessDeniedException(foreign, UUID.fromString(SUB)));
 
         mockMvc.perform(confirm(unknown.toString(), KEY))
                 .andExpect(status().isNotFound())
