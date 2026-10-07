@@ -1,5 +1,6 @@
 package co.edu.corhuila.csp.booking.adapter.in.http;
 
+import co.edu.corhuila.csp.booking.application.port.in.AuthenticatedCaller;
 import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
@@ -44,9 +45,10 @@ public class ReservationController {
     ResponseEntity<ReservationResponse> hold(
             @RequestHeader("Idempotency-Key") @Size(min = 16, max = 100) String idempotencyKey,
             @Valid @RequestBody CreateHoldRequest request,
+            AuthenticatedCaller caller,
             HttpServletRequest http) {
         CreateHoldResult result = useCases.createHold(new CreateHoldInput(
-                userIdOf(http), request.showtimeId(), request.seatLabels(), request.movieTitle(), request.roomName(),
+                caller.userId(), request.showtimeId(), request.seatLabels(), request.movieTitle(), request.roomName(),
                 request.effectiveDurationSeconds(), idempotencyKey, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
 
         Reservation reservation = result.reservation();
@@ -71,9 +73,9 @@ public class ReservationController {
     ReservationResponse confirm(
             @PathVariable UUID reservationId,
             @RequestHeader("Idempotency-Key") @Size(min = 16, max = 100) String idempotencyKey,
-            HttpServletRequest http) {
+            AuthenticatedCaller caller) {
         return ReservationResponse.of(useCases.confirmReservation(
-                userIdOf(http), reservationId, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
+                caller.userId(), reservationId, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
     }
 
     /**
@@ -81,8 +83,8 @@ public class ReservationController {
      * else and 404 when no reservation has it (booking-service.yaml, {@code getReservation}).
      */
     @GetMapping("/reservations/{reservationId}")
-    ReservationResponse reservation(@PathVariable UUID reservationId, HttpServletRequest http) {
-        return ReservationResponse.of(useCases.getReservation(userIdOf(http), reservationId));
+    ReservationResponse reservation(@PathVariable UUID reservationId, AuthenticatedCaller caller) {
+        return ReservationResponse.of(useCases.getReservation(caller.userId(), reservationId));
     }
 
     /**
@@ -97,15 +99,10 @@ public class ReservationController {
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(required = false) ReservationStatus status,
             @RequestParam(required = false) Instant createdBefore,
-            HttpServletRequest http) {
+            AuthenticatedCaller caller) {
         ReservationPage result = useCases.listReservations(
-                userIdOf(http), new ReservationQuery(page, limit, status, createdBefore));
+                caller.userId(), new ReservationQuery(page, limit, status, createdBefore));
         return ReservationListResponse.of(result, page, limit);
-    }
-
-    /** The user the filter authenticated: the {@code sub} of the token, an id of this platform. */
-    private static UUID userIdOf(HttpServletRequest http) {
-        return UUID.fromString((String) http.getAttribute(JwtAuthenticationFilter.USER_ID_ATTRIBUTE));
     }
 
     /** Where the Location of the 201 points: the route of the reservation this call created. */
