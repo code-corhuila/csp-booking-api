@@ -117,7 +117,11 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler({CannotGetJdbcConnectionException.class, DataAccessResourceFailureException.class,
             TransientDataAccessException.class, CannotCreateTransactionException.class})
-    ResponseEntity<ErrorResponse> unavailable() {
+    ResponseEntity<ErrorResponse> unavailable(HttpServletRequest request, Exception exception) {
+        // The answer is the same for a database that is down and for a pool that ran out of connections; the
+        // root cause tells the two apart for whoever receives the alert.
+        log.warn("dependency unavailable answering {} {}: {} ({})", request.getMethod(), request.getRequestURI(),
+                exception.getClass().getSimpleName(), rootCauseOf(exception).getMessage());
         return answer(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE",
                 "A required service or dependency is unavailable", null);
     }
@@ -127,6 +131,14 @@ public class ApiExceptionHandler {
     ResponseEntity<ErrorResponse> unexpected(HttpServletRequest request, Exception exception) {
         log.error("unexpected error answering {} {}", request.getMethod(), request.getRequestURI(), exception);
         return answer(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Internal server error", null);
+    }
+
+    private static Throwable rootCauseOf(Throwable failure) {
+        Throwable root = failure;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root;
     }
 
     private static ResponseEntity<ErrorResponse> answer(
