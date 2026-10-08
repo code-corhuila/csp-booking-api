@@ -16,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -109,10 +110,18 @@ public class ApiExceptionHandler {
         return answer(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS_TRANSITION", exception.getMessage(), null);
     }
 
-    /** 503: the database cannot be reached, the dependency of this service is unavailable. */
+    /**
+     * 503: the database cannot be reached, the dependency of this service is unavailable. A write
+     * opens its transaction first, so it fails with {@code CannotCreateTransactionException} and not
+     * with the connection exception a read gets.
+     */
     @ExceptionHandler({CannotGetJdbcConnectionException.class, DataAccessResourceFailureException.class,
-            TransientDataAccessException.class})
-    ResponseEntity<ErrorResponse> unavailable() {
+            TransientDataAccessException.class, CannotCreateTransactionException.class})
+    ResponseEntity<ErrorResponse> unavailable(HttpServletRequest request, Exception exception) {
+        // The answer is the same for a database that is down and for a pool that ran out of connections; the
+        // root cause tells the two apart for whoever receives the alert.
+        log.warn("dependency unavailable answering {} {}: {} ({})", request.getMethod(), request.getRequestURI(),
+                exception.getClass().getSimpleName(), rootCauseOf(exception).getMessage());
         return answer(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE",
                 "A required service or dependency is unavailable", null);
     }
@@ -122,6 +131,14 @@ public class ApiExceptionHandler {
     ResponseEntity<ErrorResponse> unexpected(HttpServletRequest request, Exception exception) {
         log.error("unexpected error answering {} {}", request.getMethod(), request.getRequestURI(), exception);
         return answer(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Internal server error", null);
+    }
+
+    private static Throwable rootCauseOf(Throwable failure) {
+        Throwable root = failure;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root;
     }
 
     private static ResponseEntity<ErrorResponse> answer(
