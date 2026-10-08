@@ -37,6 +37,7 @@ import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 /**
  * {@code POST /holds} with every answer {@code booking-service.yaml} declares around it: 201, the
@@ -170,6 +171,17 @@ class ReservationControllerTest {
     @Test
     void aDatabaseThatCannotBeReachedIsA503() throws Exception {
         when(useCases.createHold(any())).thenThrow(new CannotGetJdbcConnectionException("connection refused"));
+
+        mockMvc.perform(hold(KEY, BODY))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error").value("SERVICE_UNAVAILABLE"))
+                .andExpect(jsonPath("$.message").value("A required service or dependency is unavailable"));
+    }
+
+    @Test
+    void aTransactionThatCannotBeOpenedIsA503() throws Exception {
+        when(useCases.createHold(any())).thenThrow(new CannotCreateTransactionException(
+                "Could not open JDBC Connection for transaction", new IllegalStateException("pool exhausted")));
 
         mockMvc.perform(hold(KEY, BODY))
                 .andExpect(status().isServiceUnavailable())
