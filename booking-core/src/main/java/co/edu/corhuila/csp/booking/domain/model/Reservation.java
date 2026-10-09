@@ -10,6 +10,10 @@ import java.util.UUID;
  * One reservation lifecycle: the seats held for a showtime and what happens to them.
  * It is immutable: every transition returns a new instance, so a failed rule changes nothing.
  * Money is an integer in cents.
+ *
+ * <p>Two kinds of failure, on purpose: a malformed object throws {@link InvalidReservationException}
+ * from the constructor, while a rule evaluated against the state ({@link #hold}'s duration,
+ * {@link #confirm}, {@link #expire}, {@link #requireOwner}) throws its own typed rule exception.
  */
 public record Reservation(
         UUID id,
@@ -31,21 +35,21 @@ public record Reservation(
     public Reservation {
         if (id == null || userId == null || showtimeId == null || status == null
                 || expiresAt == null || createdAt == null) {
-            throw new BusinessRuleViolationException("a reservation needs an id, a user, a showtime, a status and its dates");
+            throw new InvalidReservationException("a reservation needs an id, a user, a showtime, a status and its dates");
         }
         if (seatLabels == null || seatLabels.isEmpty()) {
-            throw new BusinessRuleViolationException("a reservation needs at least one seat");
+            throw new InvalidReservationException("a reservation needs at least one seat");
         }
         if (seatLabels.stream().anyMatch(label -> label == null || label.isBlank())
                 || new HashSet<>(seatLabels).size() != seatLabels.size()) {
-            throw new BusinessRuleViolationException("seat labels must be non blank and not repeated");
+            throw new InvalidReservationException("seat labels must be non blank and not repeated");
         }
         if (movieTitleSnapshot == null || movieTitleSnapshot.isBlank()
                 || roomNameSnapshot == null || roomNameSnapshot.isBlank()) {
-            throw new BusinessRuleViolationException("the title and room snapshots are required");
+            throw new InvalidReservationException("the title and room snapshots are required");
         }
         if (totalAmount < 0) {
-            throw new BusinessRuleViolationException("the total amount cannot be negative");
+            throw new InvalidReservationException("the total amount cannot be negative");
         }
         seatLabels = List.copyOf(seatLabels);
     }
@@ -86,7 +90,7 @@ public record Reservation(
     /** The reservation can only be read by the user who owns it. */
     public void requireOwner(UUID caller) {
         if (!userId.equals(caller)) {
-            throw new ReservationAccessDeniedException();
+            throw new ReservationAccessDeniedException(id, caller);
         }
     }
 }
