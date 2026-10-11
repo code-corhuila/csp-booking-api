@@ -41,15 +41,35 @@ class ReservationTest {
 
     @Test
     void seatsAreRequiredNotBlankAndNotRepeated() {
-        assertThrows(BusinessRuleViolationException.class, () -> held(List.of(), Reservation.DEFAULT_HOLD));
-        assertThrows(BusinessRuleViolationException.class, () -> held(List.of(" "), Reservation.DEFAULT_HOLD));
-        assertThrows(BusinessRuleViolationException.class, () -> held(List.of("A1", "A1"), Reservation.DEFAULT_HOLD));
+        assertThrows(InvalidReservationException.class, () -> held(List.of(), Reservation.DEFAULT_HOLD));
+        assertThrows(InvalidReservationException.class, () -> held(List.of(" "), Reservation.DEFAULT_HOLD));
+        assertThrows(InvalidReservationException.class, () -> held(List.of("A1", "A1"), Reservation.DEFAULT_HOLD));
     }
 
     @Test
     void theAmountCannotBeNegative() {
-        assertThrows(BusinessRuleViolationException.class, () -> Reservation.hold(UUID.randomUUID(), USER,
+        assertThrows(InvalidReservationException.class, () -> Reservation.hold(UUID.randomUUID(), USER,
                 UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", -1));
+    }
+
+    @Test
+    void aReservationWithoutItsIdentifiersIsMalformedNotARuleViolation() {
+        assertThrows(InvalidReservationException.class, () -> Reservation.hold(null, USER,
+                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", 0));
+        assertThrows(InvalidReservationException.class, () -> Reservation.hold(UUID.randomUUID(), USER,
+                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, " ", "Room 1", 0));
+    }
+
+    @Test
+    void theAccessDenialNamesTheReservationAndTheCaller() {
+        Reservation reservation = held(List.of("A1"), Reservation.DEFAULT_HOLD);
+        UUID stranger = UUID.randomUUID();
+
+        ReservationAccessDeniedException denied = assertThrows(ReservationAccessDeniedException.class,
+                () -> reservation.requireOwner(stranger));
+
+        assertTrue(denied.getMessage().contains(reservation.id().toString()));
+        assertTrue(denied.getMessage().contains(stranger.toString()));
     }
 
     @Test

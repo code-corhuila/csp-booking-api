@@ -6,8 +6,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Composition root of the booking service. This module is the only one that knows every concrete type
  * and every limit; the adapters and the core never read configuration by themselves.
+ * <p>The scan starts one package above this class so that the adapters, which live in
+ * {@code ...booking.adapter.*}, are part of the same context as this composition root.
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "co.edu.corhuila.csp.booking")
 public class BookingApplication {
 
     public static void main(String[] args) {

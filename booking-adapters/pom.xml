@@ -12,7 +12,8 @@
 
   <artifactId>booking-adapters</artifactId>
 
-  <!-- The web and persistence dependencies are added by the Pull Requests that introduce those adapters. -->
+  <!-- Input adapters (HTTP) and output adapters (persistence). The dependency of each
+       adapter arrives with the Pull Request that introduces it. -->
   <dependencies>
     <dependency>
       <groupId>co.edu.corhuila.csp</groupId>
@@ -20,8 +21,35 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <!-- The contract answers 400 with the fields that break it: the annotations of the bodies
+         and of the headers are validated before any use case runs. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <!-- The token is parsed and its signature verified by this service (Norma 5.3.7).
+         Spring Boot does not manage this version: it is pinned by this service. -->
+    <dependency>
+      <groupId>com.nimbusds</groupId>
+      <artifactId>nimbus-jose-jwt</artifactId>
+      <version>9.48</version>
+    </dependency>
+    <!-- Persistence adapter: pool, template and the PostgreSQL driver. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

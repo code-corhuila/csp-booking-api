@@ -1,5 +1,4 @@
-# This service only. csp-infra includes this file to compose the platform.
-# The variables of the database and the JWT key are added by the pull requests that make the service read them.
+# This service only. csp-infra-postgres includes this file to compose the platform.
 name: csp-booking-api
 
 services:
@@ -9,8 +8,25 @@ services:
       dockerfile: deploy/Dockerfile
     environment:
       PORT: "8083"
+      # Public key every token is validated with (Norma 5.3.7); csp-infra-postgres mounts the PEM file.
+      # The service refuses to start without one of the two.
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
+      JWT_PUBLIC_KEY_FILE: ${JWT_PUBLIC_KEY_FILE:-}
+      # Database of this domain (Annex J.5). Compose refuses to start without them, so a missing
+      # value is reported by name instead of failing inside the JVM.
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?set SPRING_DATASOURCE_URL in .env or in the platform}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set SPRING_DATASOURCE_USERNAME in .env or in the platform}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env or in the platform}
     # expose, not ports: only the gateway is reachable from the host.
     expose: ["8083"]
+    # /health has no dependencies (DEC-005), so it only says that the process answers; the base path is
+    # the context-path of application.yml. The JRE image ships curl.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/api/v1/booking/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
     networks: [platform]
 
 networks:
