@@ -95,6 +95,27 @@ public class ReservationService implements ReservationUseCases {
     }
 
     @Override
+    public Reservation releaseReservationForWorkflow(UUID reservationId, String correlationId) {
+        Reservation reservation = holds.findById(reservationId)
+                .orElseThrow(() -> new ReservationNotFoundException(reservationId));
+        if (reservation.status() == ReservationStatus.EXPIRED) {
+            return reservation;
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        try {
+            Reservation released = reservation.release(now);
+            holds.releaseHeld(released, now, correlationId);
+            return released;
+        } catch (InvalidStatusTransitionException refused) {
+            // The sweep can expire it between the read and the write: that reservation is the
+            // answer. A confirmation that won the race, or a confirmed one, stays refused.
+            return holds.findById(reservationId)
+                    .filter(current -> current.status() == ReservationStatus.EXPIRED)
+                    .orElseThrow(() -> refused);
+        }
+    }
+
+    @Override
     public ReservationPage listReservations(UUID callerId, ReservationQuery query) {
         return holds.findByUser(callerId, query);
     }

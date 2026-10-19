@@ -47,6 +47,18 @@ public interface ReservationUseCases {
      */
     Reservation confirmReservationForWorkflow(UUID reservationId, String correlationId);
 
+    /**
+     * Releases a HELD reservation of any user for the workflow service, before its deadline (ADR-035):
+     * it becomes EXPIRED, its seats are available again and {@code ReservationExpired} is written.
+     * Idempotent by state: an already EXPIRED reservation is returned and nothing is written.
+     *
+     * @return the EXPIRED reservation
+     * @throws co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException when no reservation has the id
+     * @throws co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException when the
+     *         reservation is CONFIRMED, which is never cancelled in the MVP
+     */
+    Reservation releaseReservationForWorkflow(UUID reservationId, String correlationId);
+
     /** The page of the reservations of the caller, in the window and filters of the request. */
     ReservationPage listReservations(UUID callerId, ReservationQuery query);
 
