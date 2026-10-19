@@ -144,6 +144,50 @@ class WorkflowControllerTest {
         verifyNoInteractions(useCases);
     }
 
+    @Test
+    void aReleaseAnswers200WithTheExpiredReservation() throws Exception {
+        Reservation released = reservation().release(Instant.parse("2026-10-05T10:16:00Z"));
+        when(useCases.releaseReservationForWorkflow(eq(released.id()), any())).thenReturn(released);
+
+        mockMvc.perform(release(released.id().toString(), KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(released.id().toString()))
+                .andExpect(jsonPath("$.status").value("EXPIRED"));
+
+        verify(useCases).releaseReservationForWorkflow(released.id(), CORRELATION);
+    }
+
+    @Test
+    void aReleaseOfAnUnknownReservationIs404AndOfAConfirmedOneIs422() throws Exception {
+        UUID unknown = UUID.randomUUID();
+        UUID confirmed = UUID.randomUUID();
+        when(useCases.releaseReservationForWorkflow(eq(unknown), any()))
+                .thenThrow(new ReservationNotFoundException(unknown));
+        when(useCases.releaseReservationForWorkflow(eq(confirmed), any()))
+                .thenThrow(new InvalidStatusTransitionException("only a HELD reservation can be released"));
+
+        mockMvc.perform(release(unknown.toString(), KEY)).andExpect(status().isNotFound());
+        mockMvc.perform(release(confirmed.toString(), KEY))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error").value("INVALID_STATUS_TRANSITION"));
+    }
+
+    @Test
+    void aReleaseWithAnIdThatIsNotAUuidOrWithoutAKeyIsA400() throws Exception {
+        mockMvc.perform(release("not-a-uuid", KEY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
+        mockMvc.perform(post("/internal/workflow/reservations/" + UUID.randomUUID() + "/release"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(useCases);
+    }
+
+    private static MockHttpServletRequestBuilder release(String reservationId, String idempotencyKey) {
+        return post("/internal/workflow/reservations/" + reservationId + "/release")
+                .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
+                .header("Idempotency-Key", idempotencyKey);
+    }
+
     private static MockHttpServletRequestBuilder confirm(String reservationId, String idempotencyKey) {
         return post("/internal/workflow/reservations/" + reservationId + "/confirm")
                 .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
