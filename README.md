@@ -131,12 +131,15 @@ and `BookingConfirmed` is written once, because the transition is guarded, so a 
 
 ## Internal operations
 
-Not part of the public contract and never routed by the gateway: only `csp-worker` calls them, with a service token.
-A client token receives `403`.
+Not part of the public contract and never routed by the gateway: they take a service token. `csp-worker` calls the maintenance
+ones (`SERVICE_SUBJECTS`) and `csp-workflow` the workflow ones (`WORKFLOW_SUBJECTS`, ADR-035); a token of the other family or a
+client token receives `403`.
 
 | Route | Answer |
 |---|---|
 | `POST /internal/maintenance/expire-holds` | Expires the HELD reservations past their time (HU-BOOKING-002): `200` `{"expired", "remaining"}`, `401`/`403` |
+| `POST /internal/workflow/holds` | The hold of `POST /holds` for the `userId` of the body: `201`, `200` on a replayed key, `409`, `422`, `400`, `401`/`403` |
+| `POST /internal/workflow/reservations/{id}/confirm` | Confirms a reservation of any user. Idempotent by state: an already `CONFIRMED` one answers `200` and writes no second event. `404`, `422` for an expired one |
 
 - **Authentication:** the same RS256 validation as every route. The `sub` of the token must be one of `SERVICE_SUBJECTS`
   (`csp-worker` by default); `X-Correlation-Id` is required and travels to the event.

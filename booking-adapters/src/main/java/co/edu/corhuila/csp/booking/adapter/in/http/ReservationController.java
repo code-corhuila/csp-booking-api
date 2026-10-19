@@ -106,7 +106,7 @@ public class ReservationController {
     }
 
     /** Where the Location of the 201 points: the route of the reservation this call created. */
-    private static URI locationOf(HttpServletRequest http, Reservation reservation) {
+    static URI locationOf(HttpServletRequest http, Reservation reservation) {
         return URI.create(http.getContextPath() + "/reservations/" + reservation.id());
     }
 }

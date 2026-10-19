@@ -35,6 +35,18 @@ public interface ReservationUseCases {
      */
     Reservation confirmReservation(UUID callerId, UUID reservationId, String correlationId);
 
+    /**
+     * Confirms a HELD reservation of any user for the workflow service (ADR-035). It is idempotent
+     * by state: a reservation that is already CONFIRMED is returned as it is and nothing is written,
+     * so a retry after a lost answer is told apart from a refusal.
+     *
+     * @return the CONFIRMED reservation
+     * @throws co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException when no reservation has the id
+     * @throws co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException when the
+     *         reservation is expired or its hold time has passed
+     */
+    Reservation confirmReservationForWorkflow(UUID reservationId, String correlationId);
+
     /** The page of the reservations of the caller, in the window and filters of the request. */
     ReservationPage listReservations(UUID callerId, ReservationQuery query);
 
