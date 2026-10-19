@@ -38,6 +38,7 @@ class JwtAuthenticationFilterTest {
     private static final String SECRET = "01234567890123456789012345678901";
 
     private MockMvc mockMvc;
+    private KeyPair serviceKey;
     private RSAPrivateKey servicePrivateKey;
     private RSAPrivateKey otherPrivateKey;
 
@@ -45,14 +46,9 @@ class JwtAuthenticationFilterTest {
     void setUp() throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
-        KeyPair serviceKey = generator.generateKeyPair();
+        serviceKey = generator.generateKeyPair();
         KeyPair otherKey = generator.generateKeyPair();
-        JwtAuthenticationFilter filter =
-                new JwtAuthenticationFilter((RSAPublicKey) serviceKey.getPublic(), new ObjectMapper(),
-                        Set.of("csp-worker"));
-        this.mockMvc = MockMvcBuilders.standaloneSetup(new ProbeController())
-                .addFilters(new CorrelationIdFilter(), filter)
-                .build();
+        this.mockMvc = mockMvcWith(Set.of("csp-workflow"));
         this.servicePrivateKey = (RSAPrivateKey) serviceKey.getPrivate();
         this.otherPrivateKey = (RSAPrivateKey) otherKey.getPrivate();
     }
@@ -202,6 +198,82 @@ class JwtAuthenticationFilterTest {
                 .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
     }
 
+    private MockMvc mockMvcWith(Set<String> workflowSubjects) {
+        JwtAuthenticationFilter filter =
+                new JwtAuthenticationFilter((RSAPublicKey) serviceKey.getPublic(), new ObjectMapper(),
+                        Set.of("csp-worker"), workflowSubjects);
+        return MockMvcBuilders.standaloneSetup(new ProbeController())
+                .addFilters(new CorrelationIdFilter(), filter)
+                .build();
+    }
+
+    @Test
+    void aWorkflowTokenCallsAWorkflowOperation() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("csp-workflow"));
+
+        mockMvc.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void aWorkflowTokenCallingAMaintenanceOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("csp-workflow"));
+
+        mockMvc.perform(get("/internal/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aMaintenanceTokenCallingAWorkflowOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+
+        mockMvc.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aClientTokenCallingAWorkflowOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, validClaims());
+
+        mockMvc.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aWorkflowTokenCallingAClientOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, claimsOf("csp-workflow"));
+
+        mockMvc.perform(get("/holds")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void withNoWorkflowSubjectsTheWorkflowOperationsAreClosed() throws Exception {
+        MockMvc closed = mockMvcWith(Set.of());
+
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, claimsOf("csp-workflow"))))
+                .andExpect(status().isUnauthorized());
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, claimsOf("csp-worker"))))
+                .andExpect(status().isForbidden());
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, validClaims())))
+                .andExpect(status().isForbidden());
+    }
+
     private static JWTClaimsSet claimsOf(String subject) {
         return new JWTClaimsSet.Builder()
                 .subject(subject)
@@ -233,6 +305,11 @@ class JwtAuthenticationFilterTest {
         @GetMapping("/internal/probe")
         String internal() {
             return "internal";
+        }
+
+        @GetMapping("/internal/workflow/probe")
+        String workflow() {
+            return "workflow";
         }
 
         @GetMapping("/health")
