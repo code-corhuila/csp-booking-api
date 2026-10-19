@@ -12,6 +12,8 @@ and is tagged `v<version>` once it is merged.
 
 - `WORKFLOW_SUBJECTS`: the service subjects allowed on `/internal/workflow/`, separate from `SERVICE_SUBJECTS` so the workflow service
   never reaches the maintenance operations and the worker never reaches the workflow ones. Empty keeps the family closed (ADR-035, proposed).
+- `POST /internal/workflow/holds` and `POST /internal/workflow/reservations/{id}/confirm`, for the workflow service: the hold for the user
+  of the body, and a confirmation that is idempotent by state (ADR-035, proposed).
 
 ## [2.0.0] - 2026-10-08
 

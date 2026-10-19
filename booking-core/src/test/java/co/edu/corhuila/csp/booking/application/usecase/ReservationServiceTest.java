@@ -275,6 +275,67 @@ class ReservationServiceTest {
                 () -> service.confirmReservation(USER, held.id(), CORRELATION));
     }
 
+    @Test
+    void theWorkflowConfirmsTheReservationOfAnyUser() {
+        Reservation held = reservationOf(OTHER);
+        holds.found = Optional.of(held);
+
+        Reservation confirmed = service.confirmReservationForWorkflow(held.id(), CORRELATION);
+
+        assertEquals(ReservationStatus.CONFIRMED, confirmed.status());
+        assertEquals(OTHER, confirmed.userId());
+        assertSame(confirmed, holds.confirmed);
+        assertEquals(CORRELATION, holds.confirmedCorrelation);
+    }
+
+    @Test
+    void theWorkflowConfirmingAConfirmedReservationGetsItBackAndWritesNothing() {
+        Reservation confirmed = reservationOf(USER).confirm(NOW);
+        holds.found = Optional.of(confirmed);
+
+        assertSame(confirmed, service.confirmReservationForWorkflow(confirmed.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowConfirmingAnUnknownReservationIsNotFound() {
+        assertThrows(ReservationNotFoundException.class,
+                () -> service.confirmReservationForWorkflow(UUID.randomUUID(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowConfirmingAnExpiredReservationIsRefused() {
+        Reservation expired = reservationOf(USER).expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(expired);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservationForWorkflow(expired.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowLosingTheRaceToAnotherConfirmationGetsTheConfirmedReservation() {
+        Reservation held = reservationOf(USER);
+        Reservation confirmedByTheOther = held.confirm(NOW);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+        holds.foundAfterRaceLost = confirmedByTheOther;
+
+        assertSame(confirmedByTheOther, service.confirmReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowLosingTheRaceToTheSweepIsRefused() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+        holds.foundAfterRaceLost = held.expire(NOW.plusSeconds(601));
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservationForWorkflow(held.id(), CORRELATION));
+    }
+
     private String hashOf(CreateHoldInput request) {
         holds.stored = null;
         service.createHold(request);
@@ -318,10 +379,12 @@ class ReservationServiceTest {
         private Reservation confirmed;
         private String confirmedCorrelation;
         private boolean confirmRaceLost;
+        private Reservation foundAfterRaceLost;
 
         @Override
         public void confirm(Reservation confirmedReservation, Instant now, String correlationId) {
             if (confirmRaceLost) {
+                found = Optional.ofNullable(foundAfterRaceLost).or(() -> found);
                 throw new InvalidStatusTransitionException("a sweep won the race");
             }
             confirmed = confirmedReservation;
