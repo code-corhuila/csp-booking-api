@@ -57,7 +57,8 @@ reads is listed in `.env.example`; copy it to `.env` for local values and never 
 | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/csp` | The database of this domain |
 | `SPRING_DATASOURCE_USERNAME` | `booking_app` | The login user of the service, never the administrator |
 | `SPRING_DATASOURCE_PASSWORD` | `change-me` | Set it to the value `csp-infra-postgres` gave to `booking_app` |
-| `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the internal operations (ADR-020) |
+| `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the maintenance operations under `/internal/maintenance/` (ADR-020) |
+| `WORKFLOW_SUBJECTS` | empty | The `sub` of the service tokens allowed on `/internal/workflow/` (ADR-035). Empty keeps that family closed; a subject of one list gets `403` on the other |
 | `PORT` | `8083` | The listening port |
 
 ### Run it
