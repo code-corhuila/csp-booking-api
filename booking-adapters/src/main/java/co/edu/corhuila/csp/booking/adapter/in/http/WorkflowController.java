@@ -54,6 +54,18 @@ public class WorkflowController {
     }
 
     /**
+     * Releases a HELD reservation whoever owns it, before its deadline (ADR-035). Idempotent by
+     * state: an already EXPIRED one answers 200 with itself and writes no second event.
+     */
+    @PostMapping("/reservations/{reservationId}/release")
+    ReservationResponse release(
+            @PathVariable UUID reservationId,
+            @RequestHeader("Idempotency-Key") @Size(min = 16, max = 100) String idempotencyKey) {
+        return ReservationResponse.of(useCases.releaseReservationForWorkflow(
+                reservationId, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
+    }
+
+    /**
      * Confirms a reservation whoever owns it. Idempotent by state: a reservation that is already
      * CONFIRMED answers 200 with itself and writes no second event. As on the client route the key
      * is only checked for its shape.

@@ -140,6 +140,7 @@ client token receives `403`.
 | `POST /internal/maintenance/expire-holds` | Expires the HELD reservations past their time (HU-BOOKING-002): `200` `{"expired", "remaining"}`, `401`/`403` |
 | `POST /internal/workflow/holds` | The hold of `POST /holds` for the `userId` of the body: `201`, `200` on a replayed key, `409`, `422`, `400`, `401`/`403` |
 | `POST /internal/workflow/reservations/{id}/confirm` | Confirms a reservation of any user. Idempotent by state: an already `CONFIRMED` one answers `200` and writes no second event. `404`, `422` for an expired one |
+| `POST /internal/workflow/reservations/{id}/release` | Releases a HELD reservation of any user before its deadline: `EXPIRED`, seats available again, one `ReservationExpired`. An already `EXPIRED` one answers `200` and writes nothing; a `CONFIRMED` one is `422`. `404` |
 
 - **Authentication:** the same RS256 validation as every route. The `sub` of the token must be one of `SERVICE_SUBJECTS`
   (`csp-worker` by default); `X-Correlation-Id` is required and travels to the event.
