@@ -154,8 +154,10 @@ A client token receives `403`.
 `JdbcHoldRepositoryTest` runs only when `TEST_DATABASE_URL` is set, for example
 `jdbc:postgresql://localhost:5432/csp?user=postgres&password=postgres`, over a database where the migrations of
 `csp-booking-db` were applied. CI does this on every Pull Request and fails when the `DB_DEPLOY_KEY` secret (the private half of a read-only deploy key of that repository) is
-missing, so a green run means the tests ran. The schema is pinned to a `csp-booking-db` commit (`ref` in `ci.yml`):
-to test a newer schema, move that pin in a Pull Request of its own.
+missing, so a green run means the tests ran. The schema is pinned to a **release tag** of `csp-booking-db` (`ref` in
+`ci.yml`, today `v2.0.0`), which is the versioned artifact of that repository (numeral 11.5): to test a newer schema,
+move the pin to the next `vX.Y.Z` in a Pull Request of its own. Between releases, to try a migration that is not
+tagged yet, point `ref` at its commit in the branch of that Pull Request and put the tag back before merging.
 
 ## What is missing
 
