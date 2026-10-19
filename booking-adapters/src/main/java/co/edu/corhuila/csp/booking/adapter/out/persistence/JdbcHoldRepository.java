@@ -159,7 +159,13 @@ public class JdbcHoldRepository implements HoldRepository {
     @Override
     public void expire(Reservation expired, Instant now, String correlationId) {
         String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
-        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation));
+        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation, true));
+    }
+
+    @Override
+    public void releaseHeld(Reservation released, Instant now, String correlationId) {
+        String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        transactionTemplate.executeWithoutResult(status -> release(released, now, correlation, false));
     }
 
     @Override
@@ -200,17 +206,22 @@ public class JdbcHoldRepository implements HoldRepository {
      * whose status is HELD or CONFIRMED, so a seat only becomes available for a new hold when its
      * row leaves that set. Every statement carries a {@code status = 'HELD'} guard, so a
      * confirmation that won the race is never overwritten and a sweep that runs twice is a no-op.
+     * The sweep also requires the hold to be overdue; a release on demand (ADR-035) does not.
      */
-    private void release(Reservation expired, Instant now, String correlationId) {
+    private void release(Reservation expired, Instant now, String correlationId, boolean mustBeOverdue) {
         int expiredReservations = jdbc.update("""
                 UPDATE booking.reservation r SET status = 'EXPIRED'
                 WHERE r.id = ?
                   AND r.status = 'HELD'
                   AND EXISTS (SELECT 1 FROM booking.seat_hold h
                               WHERE h.id = r.hold_id
-                                AND h.expires_at <= ?)""",
-                expired.id(), at(now));
+                                AND (? = FALSE OR h.expires_at <= ?))""",
+                expired.id(), mustBeOverdue, at(now));
         if (expiredReservations == 0) {
+            if (!mustBeOverdue) {
+                throw new InvalidStatusTransitionException(
+                        "the reservation " + expired.id() + " is no longer a HELD reservation");
+            }
             throw new HoldNoLongerOverdueException(
                     "the reservation " + expired.id() + " is no longer an overdue HELD reservation");
         }
