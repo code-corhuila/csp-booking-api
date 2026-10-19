@@ -57,7 +57,8 @@ reads is listed in `.env.example`; copy it to `.env` for local values and never 
 | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/csp` | The database of this domain |
 | `SPRING_DATASOURCE_USERNAME` | `booking_app` | The login user of the service, never the administrator |
 | `SPRING_DATASOURCE_PASSWORD` | `change-me` | Set it to the value `csp-infra-postgres` gave to `booking_app` |
-| `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the internal operations (ADR-020) |
+| `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the maintenance operations under `/internal/maintenance/` (ADR-020) |
+| `WORKFLOW_SUBJECTS` | empty | The `sub` of the service tokens allowed on `/internal/workflow/` (ADR-035). Empty keeps that family closed; a subject of one list gets `403` on the other |
 | `PORT` | `8083` | The listening port |
 
 ### Run it
@@ -130,12 +131,16 @@ and `BookingConfirmed` is written once, because the transition is guarded, so a 
 
 ## Internal operations
 
-Not part of the public contract and never routed by the gateway: only `csp-worker` calls them, with a service token.
-A client token receives `403`.
+Not part of the public contract and never routed by the gateway: they take a service token. `csp-worker` calls the maintenance
+ones (`SERVICE_SUBJECTS`) and `csp-workflow` the workflow ones (`WORKFLOW_SUBJECTS`, ADR-035); a token of the other family or a
+client token receives `403`.
 
 | Route | Answer |
 |---|---|
 | `POST /internal/maintenance/expire-holds` | Expires the HELD reservations past their time (HU-BOOKING-002): `200` `{"expired", "remaining"}`, `401`/`403` |
+| `POST /internal/workflow/holds` | The hold of `POST /holds` for the `userId` of the body: `201`, `200` on a replayed key, `409`, `422`, `400`, `401`/`403` |
+| `POST /internal/workflow/reservations/{id}/confirm` | Confirms a reservation of any user. Idempotent by state: an already `CONFIRMED` one answers `200` and writes no second event. `404`, `422` for an expired one |
+| `POST /internal/workflow/reservations/{id}/release` | Releases a HELD reservation of any user before its deadline: `EXPIRED`, seats available again, one `ReservationExpired`. An already `EXPIRED` one answers `200` and writes nothing; a `CONFIRMED` one is `422`. `404` |
 
 - **Authentication:** the same RS256 validation as every route. The `sub` of the token must be one of `SERVICE_SUBJECTS`
   (`csp-worker` by default); `X-Correlation-Id` is required and travels to the event.

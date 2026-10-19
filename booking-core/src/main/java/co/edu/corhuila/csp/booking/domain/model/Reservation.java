@@ -87,6 +87,18 @@ public record Reservation(
                 movieTitleSnapshot, roomNameSnapshot, totalAmount, createdAt, confirmedAt);
     }
 
+    /**
+     * A HELD reservation is released on demand, before or after its deadline, and becomes EXPIRED
+     * (ADR-035). The hold time stays as it was. Anything but HELD cannot be released.
+     */
+    public Reservation release(Instant now) {
+        if (status != ReservationStatus.HELD) {
+            throw new InvalidStatusTransitionException("only a HELD reservation can be released");
+        }
+        return new Reservation(id, userId, showtimeId, seatLabels, ReservationStatus.EXPIRED, expiresAt,
+                movieTitleSnapshot, roomNameSnapshot, totalAmount, createdAt, confirmedAt);
+    }
+
     /** The reservation can only be read by the user who owns it. */
     public void requireOwner(UUID caller) {
         if (!userId.equals(caller)) {

@@ -275,6 +275,126 @@ class ReservationServiceTest {
                 () -> service.confirmReservation(USER, held.id(), CORRELATION));
     }
 
+    @Test
+    void theWorkflowConfirmsTheReservationOfAnyUser() {
+        Reservation held = reservationOf(OTHER);
+        holds.found = Optional.of(held);
+
+        Reservation confirmed = service.confirmReservationForWorkflow(held.id(), CORRELATION);
+
+        assertEquals(ReservationStatus.CONFIRMED, confirmed.status());
+        assertEquals(OTHER, confirmed.userId());
+        assertSame(confirmed, holds.confirmed);
+        assertEquals(CORRELATION, holds.confirmedCorrelation);
+    }
+
+    @Test
+    void theWorkflowConfirmingAConfirmedReservationGetsItBackAndWritesNothing() {
+        Reservation confirmed = reservationOf(USER).confirm(NOW);
+        holds.found = Optional.of(confirmed);
+
+        assertSame(confirmed, service.confirmReservationForWorkflow(confirmed.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowConfirmingAnUnknownReservationIsNotFound() {
+        assertThrows(ReservationNotFoundException.class,
+                () -> service.confirmReservationForWorkflow(UUID.randomUUID(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowConfirmingAnExpiredReservationIsRefused() {
+        Reservation expired = reservationOf(USER).expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(expired);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservationForWorkflow(expired.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowLosingTheRaceToAnotherConfirmationGetsTheConfirmedReservation() {
+        Reservation held = reservationOf(USER);
+        Reservation confirmedByTheOther = held.confirm(NOW);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+        holds.foundAfterRaceLost = confirmedByTheOther;
+
+        assertSame(confirmedByTheOther, service.confirmReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowLosingTheRaceToTheSweepIsRefused() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+        holds.foundAfterRaceLost = held.expire(NOW.plusSeconds(601));
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowReleasesAHeldReservationOfAnyUserAndTheTransitionIsPersisted() {
+        Reservation held = reservationOf(OTHER);
+        holds.found = Optional.of(held);
+
+        Reservation released = service.releaseReservationForWorkflow(held.id(), CORRELATION);
+
+        assertEquals(ReservationStatus.EXPIRED, released.status());
+        assertEquals(OTHER, released.userId());
+        assertSame(released, holds.released);
+        assertEquals(NOW, holds.releasedAt);
+        assertEquals(CORRELATION, holds.releasedCorrelation);
+    }
+
+    @Test
+    void theWorkflowReleasingAnExpiredReservationGetsItBackAndWritesNothing() {
+        Reservation expired = reservationOf(USER).expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(expired);
+
+        assertSame(expired, service.releaseReservationForWorkflow(expired.id(), CORRELATION));
+        assertNull(holds.released);
+    }
+
+    @Test
+    void theWorkflowCannotReleaseAConfirmedOrAnUnknownReservation() {
+        Reservation confirmed = reservationOf(USER).confirm(NOW);
+        holds.found = Optional.of(confirmed);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.releaseReservationForWorkflow(confirmed.id(), CORRELATION));
+
+        holds.found = Optional.empty();
+        assertThrows(ReservationNotFoundException.class,
+                () -> service.releaseReservationForWorkflow(UUID.randomUUID(), CORRELATION));
+        assertNull(holds.released);
+    }
+
+    @Test
+    void theWorkflowLosingTheReleaseRaceToTheSweepGetsTheExpiredReservation() {
+        Reservation held = reservationOf(USER);
+        Reservation expiredByTheSweep = held.expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(held);
+        holds.releaseRaceLost = true;
+        holds.foundAfterRaceLost = expiredByTheSweep;
+
+        assertSame(expiredByTheSweep, service.releaseReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowLosingTheReleaseRaceToAConfirmationIsRefused() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+        holds.releaseRaceLost = true;
+        holds.foundAfterRaceLost = held.confirm(NOW);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.releaseReservationForWorkflow(held.id(), CORRELATION));
+    }
+
     private String hashOf(CreateHoldInput request) {
         holds.stored = null;
         service.createHold(request);
@@ -318,14 +438,31 @@ class ReservationServiceTest {
         private Reservation confirmed;
         private String confirmedCorrelation;
         private boolean confirmRaceLost;
+        private Reservation foundAfterRaceLost;
+        private boolean releaseRaceLost;
+        private Reservation released;
+        private Instant releasedAt;
+        private String releasedCorrelation;
 
         @Override
         public void confirm(Reservation confirmedReservation, Instant now, String correlationId) {
             if (confirmRaceLost) {
+                found = Optional.ofNullable(foundAfterRaceLost).or(() -> found);
                 throw new InvalidStatusTransitionException("a sweep won the race");
             }
             confirmed = confirmedReservation;
             confirmedCorrelation = correlationId;
+        }
+
+        @Override
+        public void releaseHeld(Reservation releasedReservation, Instant now, String correlationId) {
+            if (releaseRaceLost) {
+                found = Optional.ofNullable(foundAfterRaceLost).or(() -> found);
+                throw new InvalidStatusTransitionException("another call won the race");
+            }
+            released = releasedReservation;
+            releasedAt = now;
+            releasedCorrelation = correlationId;
         }
 
         @Override

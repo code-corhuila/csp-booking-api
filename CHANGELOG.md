@@ -8,6 +8,15 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+### Added
+
+- `WORKFLOW_SUBJECTS`: the service subjects allowed on `/internal/workflow/`, separate from `SERVICE_SUBJECTS` so the workflow service
+  never reaches the maintenance operations and the worker never reaches the workflow ones. Empty keeps the family closed (ADR-035, proposed).
+- `POST /internal/workflow/holds` and `POST /internal/workflow/reservations/{id}/confirm`, for the workflow service: the hold for the user
+  of the body, and a confirmation that is idempotent by state (ADR-035, proposed).
+- `POST /internal/workflow/reservations/{id}/release`: undoes a hold on demand, with the effect and the `ReservationExpired` event of
+  the expiration sweep and without waiting for the deadline (ADR-035, proposed).
+
 ## [2.0.0] - 2026-10-08
 
 MVP 2 (Cut 2). Stories HU-BOOKING-001 ([#8](https://github.com/code-corhuila/csp-booking-api/issues/8)), HU-BOOKING-002

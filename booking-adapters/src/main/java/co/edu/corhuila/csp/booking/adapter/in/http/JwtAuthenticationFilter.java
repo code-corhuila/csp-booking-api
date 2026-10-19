@@ -44,20 +44,27 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final Set<String> PUBLIC_PATHS = Set.of("/health", "/health/ready");
 
     private static final String INTERNAL_PREFIX = "/internal/";
+    private static final String WORKFLOW_PREFIX = "/internal/workflow/";
 
     private final RSAPublicKey publicKey;
     private final ObjectMapper objectMapper;
     private final Set<String> serviceSubjects;
+    private final Set<String> workflowSubjects;
 
     /**
-     * @param serviceSubjects the {@code sub} of the service tokens that may call the internal
-     *     operations (ADR-020, {@code SERVICE_SUBJECTS}); a client token never may
+     * @param serviceSubjects the {@code sub} of the service tokens that may call the maintenance
+     *     operations under {@code /internal/} (ADR-020, {@code SERVICE_SUBJECTS}); a client token never may
+     * @param workflowSubjects the {@code sub} of the service tokens that may call the operations
+     *     under {@code /internal/workflow/} (ADR-035, {@code WORKFLOW_SUBJECTS}); empty keeps that
+     *     family closed, and a subject of one list never reaches the operations of the other
      */
     public JwtAuthenticationFilter(RSAPublicKey jwtPublicKey, ObjectMapper objectMapper,
-            @Value("${SERVICE_SUBJECTS:csp-worker}") Set<String> serviceSubjects) {
+            @Value("${SERVICE_SUBJECTS:csp-worker}") Set<String> serviceSubjects,
+            @Value("${WORKFLOW_SUBJECTS:}") Set<String> workflowSubjects) {
         this.publicKey = jwtPublicKey;
         this.objectMapper = objectMapper;
         this.serviceSubjects = Set.copyOf(serviceSubjects);
+        this.workflowSubjects = Set.copyOf(workflowSubjects);
     }
 
     @Override
@@ -78,10 +85,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "INVALID_TOKEN", "the token is invalid or expired");
             return;
         }
-        // An internal operation takes only a service token, and a service token takes only an
-        // internal operation: a valid token of the wrong kind is a 403, not a 401 (ADR-020).
+        // An internal operation takes only the service token of its own family, and a service token
+        // takes only the operations of its family: a valid token of the wrong kind is a 403, not a
+        // 401 (ADR-020, ADR-035).
+        Set<String> allowed = path != null && path.startsWith(WORKFLOW_PREFIX) ? workflowSubjects
+                : path != null && path.startsWith(INTERNAL_PREFIX) ? serviceSubjects : Set.of();
         boolean internal = path != null && path.startsWith(INTERNAL_PREFIX);
-        if (internal != serviceSubjects.contains(userId.get())) {
+        if (internal ? !allowed.contains(userId.get()) : isServiceSubject(userId.get())) {
             writeError(response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN",
                     "the token is not allowed to call this operation");
             return;
@@ -133,11 +143,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: it has no sub claim");
             return Optional.empty();
         }
-        if (!serviceSubjects.contains(subject) && !isId(subject)) {
+        if (!isServiceSubject(subject) && !isId(subject)) {
             logger.debug("rejected token: its sub is not the id of a user of this platform");
             return Optional.empty();
         }
         return Optional.of(subject);
+    }
+
+    private boolean isServiceSubject(String subject) {
+        return serviceSubjects.contains(subject) || workflowSubjects.contains(subject);
     }
 
     /**
