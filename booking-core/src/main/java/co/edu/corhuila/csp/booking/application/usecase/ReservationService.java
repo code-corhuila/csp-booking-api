@@ -9,8 +9,10 @@ import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueExcep
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
+import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -69,6 +71,27 @@ public class ReservationService implements ReservationUseCases {
         Reservation confirmed = reservation.confirm(now);
         holds.confirm(confirmed, now, correlationId);
         return confirmed;
+    }
+
+    @Override
+    public Reservation confirmReservationForWorkflow(UUID reservationId, String correlationId) {
+        Reservation reservation = holds.findById(reservationId)
+                .orElseThrow(() -> new ReservationNotFoundException(reservationId));
+        if (reservation.status() == ReservationStatus.CONFIRMED) {
+            return reservation;
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        try {
+            Reservation confirmed = reservation.confirm(now);
+            holds.confirm(confirmed, now, correlationId);
+            return confirmed;
+        } catch (InvalidStatusTransitionException refused) {
+            // A concurrent call can confirm it between the read and the write: that reservation is
+            // the answer, anything else is the refusal.
+            return holds.findById(reservationId)
+                    .filter(current -> current.status() == ReservationStatus.CONFIRMED)
+                    .orElseThrow(() -> refused);
+        }
     }
 
     @Override
