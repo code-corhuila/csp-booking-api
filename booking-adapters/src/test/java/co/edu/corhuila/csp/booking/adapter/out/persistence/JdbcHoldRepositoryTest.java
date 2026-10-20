@@ -316,6 +316,51 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
+    void releaseHeldFreesTheSeatsOfAHoldThatIsNotOverdueAndWritesOneExpiredEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation fresh = store(hold(UUID.randomUUID(), showtime, seats("U1", "U2"), "Movie", "Room 1"));
+
+        repository.releaseHeld(fresh.release(now), now, CORRELATION);
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'EXPIRED'",
+                fresh.id()));
+        assertEquals(1, count("SELECT count(*) FROM booking.seat_hold WHERE id = ? AND status = 'EXPIRED'",
+                fresh.id()));
+        assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'RELEASED'",
+                fresh.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", fresh.id()));
+        // The seats are available again: another client can hold them right away.
+        Reservation again = store(hold(UUID.randomUUID(), showtime, seats("U1", "U2"), "Movie", "Room 1"));
+        assertEquals(ReservationStatus.HELD, repository.findById(again.id()).orElseThrow().status());
+    }
+
+    @Test
+    void releaseHeldIsRefusedForAConfirmedOrAnAlreadyReleasedReservationAndWritesNoEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation confirmed = store(hold(seats("V1")));
+        repository.confirm(confirmed.confirm(now), now, CORRELATION);
+        Reservation released = store(hold(seats("V2")));
+        repository.releaseHeld(released.release(now), now, CORRELATION);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.releaseHeld(confirmed.release(now), now, CORRELATION));
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.releaseHeld(released.release(now), now, CORRELATION));
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'CONFIRMED'",
+                confirmed.id()));
+        assertEquals(0, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", confirmed.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", released.id()));
+    }
+
+    @Test
     void confirmMovesTheReservationTheHoldAndEverySeatInOneTransaction() {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation held = store(hold(seats("P1", "P2")));

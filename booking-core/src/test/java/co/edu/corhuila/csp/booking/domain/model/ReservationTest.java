@@ -112,6 +112,19 @@ class ReservationTest {
     }
 
     @Test
+    void aHeldReservationCanBeReleasedBeforeItsDeadlineAndNothingElseCan() {
+        Reservation original = held(List.of("A1"), Reservation.DEFAULT_HOLD);
+
+        Reservation released = original.release(NOW.plusSeconds(10));
+
+        assertEquals(ReservationStatus.EXPIRED, released.status());
+        assertEquals(original.expiresAt(), released.expiresAt());
+        assertThrows(InvalidStatusTransitionException.class, () -> released.release(NOW.plusSeconds(20)));
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> original.confirm(NOW.plusSeconds(1)).release(NOW.plusSeconds(20)));
+    }
+
+    @Test
     void aConfirmedReservationNeverExpires() {
         Reservation confirmed = held(List.of("A1"), Reservation.DEFAULT_HOLD).confirm(NOW.plusSeconds(1));
 
