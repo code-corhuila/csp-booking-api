@@ -8,6 +8,12 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-20
+
+Internal routes of the workflow service on the Booking API (ADR-035, still proposed) and the CI pin of the schema. The schema is the
+one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW_SUBJECTS` is empty by default, so the
+`/internal/workflow/` family stays closed until the platform sets it.
+
 ### Added
 
 - `WORKFLOW_SUBJECTS`: the service subjects allowed on `/internal/workflow/`, separate from `SERVICE_SUBJECTS` so the workflow service
@@ -16,6 +22,11 @@ and is tagged `v<version>` once it is merged.
   of the body, and a confirmation that is idempotent by state (ADR-035, proposed).
 - `POST /internal/workflow/reservations/{id}/release`: undoes a hold on demand, with the effect and the `ReservationExpired` event of
   the expiration sweep and without waiting for the deadline (ADR-035, proposed).
+
+### Changed
+
+- The CI checks out `csp-booking-db` at the release tag `v2.0.0` instead of a commit.
+  ([#55](https://github.com/code-corhuila/csp-booking-api/pull/55))
 
 ## [2.0.0] - 2026-10-08
 
