@@ -106,6 +106,7 @@ The routes are served under `/api/v1/booking`, the base `booking-service.yaml` o
 | `POST /reservations/{reservationId}/confirm` | Confirms a `HELD` reservation of the caller: `200` with the reservation, `422 INVALID_STATUS_TRANSITION` when it is expired or already confirmed, `403` for another user's, `404` when it does not exist |
 | `GET /reservations/{reservationId}` | One reservation of the caller (`403` for another user's, `404` when it does not exist) |
 | `GET /reservations` | Page of the caller, newest first: `page`, `limit`, `status`, `createdBefore` |
+| `GET /showtimes/{showtimeId}/seats` | The seat map of a showtime for any role: the layout of Catalog with `AVAILABLE`, `HELD` or `CONFIRMED` per seat, never cached; `404` when Catalog has no such showtime, `503` when it cannot answer (ADR-046) |
 
 ```bash
 curl http://localhost:8083/api/v1/booking/health
@@ -171,8 +172,8 @@ tagged yet, point `ref` at its commit in the branch of that Pull Request and put
 - **No gateway.** Nothing routes `/api/v1/booking` yet and the service has no CORS configuration, so a browser cannot
   call it directly; the portals expect the gateway of Annex F.
 - **No Catalog snapshot.** The hold does not read Catalog yet (Cut 2): `movieTitle` and `roomName` come in the
-  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020). The client of
-  Catalog (`CATALOG_BASE_URL`) exists and no route uses it yet; the seat map is the first (ADR-046).
+  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020). Only the seat map
+  reads Catalog (`CATALOG_BASE_URL`, ADR-046).
 - **No replay of a confirmation.** See the idempotency note above.
 - **No release of a hold by the client.** The contract 3.1.0 has no such route; a hold ends by confirmation or expiration.
 - **The outbox has no purge** and nothing deletes from it (`csp-booking-db#18`).
