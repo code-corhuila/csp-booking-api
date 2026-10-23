@@ -7,10 +7,12 @@ import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.SeatOccupancy;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
+import co.edu.corhuila.csp.booking.domain.model.SeatStatus;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Array;
@@ -40,7 +42,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * concurrent clients cannot double-book or double-charge a retry.
  */
 @Repository
-public class JdbcHoldRepository implements HoldRepository {
+public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
 
     private static final String AGGREGATE_TYPE = "Reservation";
     private static final String EVENT_TYPE = "ReservationHeld";
@@ -132,6 +134,20 @@ public class JdbcHoldRepository implements HoldRepository {
     @Override
     public Optional<Reservation> findById(UUID reservationId) {
         return first(RESERVATION_SELECT + "WHERE r.id = ?" + GROUP_BY_RESERVATION, reservationId);
+    }
+
+    /**
+     * The seats {@code uk_seat_hold_item_active_seat} covers: the ones a second hold would be refused. An overdue hold
+     * stays {@code HELD} until the sweep releases it, exactly as for the hold itself (ADR-046).
+     */
+    @Override
+    public Map<String, SeatStatus> takenSeats(UUID showtimeId) {
+        Map<String, SeatStatus> taken = new LinkedHashMap<>();
+        jdbc.query("SELECT seat_number, status FROM booking.seat_hold_item WHERE showtime_id = ? "
+                + "AND status IN ('HELD', 'CONFIRMED')", rs -> {
+                    taken.put(rs.getString("seat_number"), SeatStatus.valueOf(rs.getString("status")));
+                }, showtimeId);
+        return taken;
     }
 
     @Override
