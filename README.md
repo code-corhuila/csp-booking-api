@@ -59,6 +59,8 @@ reads is listed in `.env.example`; copy it to `.env` for local values and never 
 | `SPRING_DATASOURCE_PASSWORD` | `change-me` | Set it to the value `csp-infra-postgres` gave to `booking_app` |
 | `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the maintenance operations under `/internal/maintenance/` (ADR-020) |
 | `WORKFLOW_SUBJECTS` | empty | The `sub` of the service tokens allowed on `/internal/workflow/` (ADR-035). Empty keeps that family closed; a subject of one list gets `403` on the other |
+| `CATALOG_BASE_URL` | none | The base of the Catalog API inside the platform network, for example `http://catalog:8082/api/v1/catalog` (ADR-020). Without it the routes that read Catalog answer `503` |
+| `CATALOG_SERVICE_TOKEN_FILE` | none, **required** with `CATALOG_BASE_URL` | The file with the service credential (`sub` `booking-service`) the secret manager rotates; it is re-read at most every 30 seconds |
 | `PORT` | `8083` | The listening port |
 
 ### Run it
@@ -168,8 +170,9 @@ tagged yet, point `ref` at its commit in the branch of that Pull Request and put
 
 - **No gateway.** Nothing routes `/api/v1/booking` yet and the service has no CORS configuration, so a browser cannot
   call it directly; the portals expect the gateway of Annex F.
-- **No Catalog snapshot.** The service runs without `CATALOG_BASE_URL` (Cut 2): `movieTitle` and `roomName` come in the
-  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020).
+- **No Catalog snapshot.** The hold does not read Catalog yet (Cut 2): `movieTitle` and `roomName` come in the
+  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020). The client of
+  Catalog (`CATALOG_BASE_URL`) exists and no route uses it yet; the seat map is the first (ADR-046).
 - **No replay of a confirmation.** See the idempotency note above.
 - **No release of a hold by the client.** The contract 3.1.0 has no such route; a hold ends by confirmation or expiration.
 - **The outbox has no purge** and nothing deletes from it (`csp-booking-db#18`).
