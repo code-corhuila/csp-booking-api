@@ -25,7 +25,7 @@ public record CreateHoldRequest(
         @Min(60) @Max(900) Integer holdDurationSeconds) {
 
     /** The duration the contract gives to the requests that leave it out. */
-    private static final int DEFAULT_DURATION_SECONDS = 600;
+    static final int DEFAULT_DURATION_SECONDS = 600;
 
     /** The seconds this hold lasts: the value of the body, or the default of the contract. */
     public int effectiveDurationSeconds() {

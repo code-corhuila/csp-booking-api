@@ -55,6 +55,20 @@ public interface HoldRepository {
     void confirm(Reservation confirmed, Instant now, String correlationId);
 
     /**
+     * Releases a HELD hold on demand, whatever its deadline (ADR-035): the same three updates and the
+     * same {@code ReservationExpired} outbox event as {@link #expire}, in one transaction, without
+     * the requirement that the hold be overdue.
+     *
+     * @param released the reservation already transitioned by the domain to EXPIRED
+     * @param now the instant the release was decided on
+     * @param correlationId the correlation id of the request, written to the event metadata
+     * @throws co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException when the
+     *         reservation was no longer HELD, so a second release or a confirmation that won the
+     *         race changes nothing and writes no event
+     */
+    void releaseHeld(Reservation released, Instant now, String correlationId);
+
+    /**
      * HELD reservations past their expiration time, oldest expiration first, up to {@code limit}.
      * Used by the expiration sweep of csp-worker (HU-BOOKING-002).
      */

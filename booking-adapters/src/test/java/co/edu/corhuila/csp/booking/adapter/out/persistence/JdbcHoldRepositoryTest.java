@@ -14,6 +14,7 @@ import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
+import co.edu.corhuila.csp.booking.domain.model.SeatStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariConfig;
@@ -316,6 +317,51 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
+    void releaseHeldFreesTheSeatsOfAHoldThatIsNotOverdueAndWritesOneExpiredEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation fresh = store(hold(UUID.randomUUID(), showtime, seats("U1", "U2"), "Movie", "Room 1"));
+
+        repository.releaseHeld(fresh.release(now), now, CORRELATION);
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'EXPIRED'",
+                fresh.id()));
+        assertEquals(1, count("SELECT count(*) FROM booking.seat_hold WHERE id = ? AND status = 'EXPIRED'",
+                fresh.id()));
+        assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'RELEASED'",
+                fresh.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", fresh.id()));
+        // The seats are available again: another client can hold them right away.
+        Reservation again = store(hold(UUID.randomUUID(), showtime, seats("U1", "U2"), "Movie", "Room 1"));
+        assertEquals(ReservationStatus.HELD, repository.findById(again.id()).orElseThrow().status());
+    }
+
+    @Test
+    void releaseHeldIsRefusedForAConfirmedOrAnAlreadyReleasedReservationAndWritesNoEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation confirmed = store(hold(seats("V1")));
+        repository.confirm(confirmed.confirm(now), now, CORRELATION);
+        Reservation released = store(hold(seats("V2")));
+        repository.releaseHeld(released.release(now), now, CORRELATION);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.releaseHeld(confirmed.release(now), now, CORRELATION));
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.releaseHeld(released.release(now), now, CORRELATION));
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'CONFIRMED'",
+                confirmed.id()));
+        assertEquals(0, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", confirmed.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", released.id()));
+    }
+
+    @Test
     void confirmMovesTheReservationTheHoldAndEverySeatInOneTransaction() {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation held = store(hold(seats("P1", "P2")));
@@ -396,6 +442,29 @@ class JdbcHoldRepositoryTest {
         assertEquals(1, count("""
                 SELECT count(*) FROM booking.outbox_event
                 WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", held.id()));
+    }
+
+    @Test
+    void takenSeatsShowsTheHeldAndTheConfirmedSeatsOfThatShowtimeOnlyAndTheSweepFreesThem() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation held = store(hold(UUID.randomUUID(), showtime, seats("L1"), "Movie", "Room 1"));
+        Reservation toConfirm = store(hold(UUID.randomUUID(), showtime, seats("L2"), "Movie", "Room 1"));
+        repository.confirm(toConfirm.confirm(now), now, CORRELATION);
+        Reservation overdue = store(overdueHold(showtime, seats("L3"), now.minusSeconds(700)));
+        store(hold(UUID.randomUUID(), UUID.randomUUID(), seats("L1"), "Movie", "Room 1"));
+
+        // An overdue hold stays HELD until the sweep, the same fact that makes a second hold of L3 fail.
+        assertEquals(java.util.Map.of("L1", SeatStatus.HELD, "L2", SeatStatus.CONFIRMED, "L3", SeatStatus.HELD),
+                repository.takenSeats(showtime));
+        assertThrows(BusinessRuleViolationException.class,
+                () -> store(hold(UUID.randomUUID(), showtime, seats("L3"), "Movie", "Room 1")));
+
+        repository.expire(overdue.expire(now), now, CORRELATION);
+
+        assertEquals(java.util.Map.of("L1", SeatStatus.HELD, "L2", SeatStatus.CONFIRMED), repository.takenSeats(showtime));
+        assertEquals(java.util.Map.of(), repository.takenSeats(UUID.randomUUID()));
+        assertEquals(ReservationStatus.HELD, repository.findById(held.id()).orElseThrow().status());
     }
 
     private Reservation store(Reservation reservation) {

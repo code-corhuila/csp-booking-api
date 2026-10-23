@@ -1,6 +1,8 @@
 package co.edu.corhuila.csp.booking.adapter.in.http;
 
+import co.edu.corhuila.csp.booking.application.port.out.CatalogUnavailableException;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeNotAvailableException;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.ReservationAccessDeniedException;
@@ -86,6 +88,12 @@ public class ApiExceptionHandler {
         return answer(HttpStatus.NOT_FOUND, "NOT_FOUND", exception.getMessage(), null);
     }
 
+    /** 404: Catalog has no available showtime with that id (ADR-042, ADR-046). */
+    @ExceptionHandler(ShowtimeNotAvailableException.class)
+    ResponseEntity<ErrorResponse> showtimeNotAvailable(ShowtimeNotAvailableException exception) {
+        return answer(HttpStatus.NOT_FOUND, "NOT_FOUND", exception.getMessage(), null);
+    }
+
     /** 404: nothing answers that path. */
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
     ResponseEntity<ErrorResponse> noRoute() {
@@ -122,6 +130,14 @@ public class ApiExceptionHandler {
         // root cause tells the two apart for whoever receives the alert.
         log.warn("dependency unavailable answering {} {}: {} ({})", request.getMethod(), request.getRequestURI(),
                 exception.getClass().getSimpleName(), rootCauseOf(exception).getMessage());
+        return answer(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE",
+                "A required service or dependency is unavailable", null);
+    }
+
+    /** 503: Catalog cannot be reached or answered a server error; no map is made without its layout (ADR-020). */
+    @ExceptionHandler(CatalogUnavailableException.class)
+    ResponseEntity<ErrorResponse> catalogUnavailable(HttpServletRequest request, CatalogUnavailableException exception) {
+        log.warn("catalog unavailable answering {} {}: {}", request.getMethod(), request.getRequestURI(), exception.getMessage());
         return answer(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE",
                 "A required service or dependency is unavailable", null);
     }
