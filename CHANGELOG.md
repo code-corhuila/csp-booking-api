@@ -10,6 +10,11 @@ and is tagged `v<version>` once it is merged.
 
 ### Added
 
+- Client of the Catalog availability operation (`GET /showtimes/{showtimeId}/availability`): the output port `ShowtimeCatalog` and the adapter
+  `HttpShowtimeCatalog`, with the service credential read from `CATALOG_SERVICE_TOKEN_FILE` (re-read every 30 s), timeouts of 2 s and 3 s,
+  `404` as a showtime that is not available, timeout, connection error or `5xx` as an unavailable Catalog, `401` or `403` as a configuration
+  fault, and no layout invented when `seatLayout` is missing (ADR-020, ADR-046, `catalog-service.yaml` 1.9.0). No route uses it yet
+  (`csp-booking-api#62`, HU-CATALOG-005).
 - `WORKFLOW_SUBJECTS`: the service subjects allowed on `/internal/workflow/`, separate from `SERVICE_SUBJECTS` so the workflow service
   never reaches the maintenance operations and the worker never reaches the workflow ones. Empty keeps the family closed (ADR-035, proposed).
 - `POST /internal/workflow/holds` and `POST /internal/workflow/reservations/{id}/confirm`, for the workflow service: the hold for the user
