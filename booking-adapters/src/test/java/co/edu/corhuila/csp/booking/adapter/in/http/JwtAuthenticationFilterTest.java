@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.adapter.in.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -18,6 +19,7 @@ import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Date;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -274,6 +277,114 @@ class JwtAuthenticationFilterTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void aTokenThatExpiredWithinTheClockSkewIsAccepted() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() - 10_000))
+                .build();
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void aTokenThatExpiredBeyondTheClockSkewIsRejected() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() - 35_000))
+                .build();
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void creatingAHoldNeedsThePermissionToCreate() throws Exception {
+        mockMvc.perform(post("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + tokenWith("booking:create")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void creatingAHoldWithoutThePermissionReceivesForbidden() throws Exception {
+        mockMvc.perform(post("/holds")
+                        .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + tokenWith("booking:read:self", "catalog:read")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void aTokenWithoutPermissionsClaimCannotCreateAHold() throws Exception {
+        mockMvc.perform(post("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, validClaims())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aPermissionsClaimThatIsNotAListGrantsNothing() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .claim("permissions", "booking:create")
+                .build();
+
+        mockMvc.perform(post("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void confirmingAReservationNeedsThePermissionToCreate() throws Exception {
+        mockMvc.perform(post("/reservations/" + SUB + "/confirm").header(
+                        JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + tokenWith("booking:read:self")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/reservations/" + SUB + "/confirm").header(
+                        JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + tokenWith("booking:create")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void readingReservationsNeedsThePermissionToReadOwn() throws Exception {
+        String reader = tokenWith("booking:read:self");
+        String creatorOnly = tokenWith("booking:create");
+
+        mockMvc.perform(get("/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + reader))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/reservations/" + SUB).header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + reader))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + creatorOnly))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        mockMvc.perform(get("/reservations/" + SUB).header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + creatorOnly))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void theUnauthorizedAnswerComesBeforeThePermissionCheck() throws Exception {
+        mockMvc.perform(post("/holds"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    private String tokenWith(String... permissions) throws JOSEException {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .claim("permissions", List.of(permissions))
+                .build();
+        return rs256Token(servicePrivateKey, claims);
+    }
+
     private static JWTClaimsSet claimsOf(String subject) {
         return new JWTClaimsSet.Builder()
                 .subject(subject)
@@ -300,6 +411,26 @@ class JwtAuthenticationFilterTest {
         @GetMapping("/holds")
         String hold() {
             return "held";
+        }
+
+        @PostMapping("/holds")
+        String createHold() {
+            return "created";
+        }
+
+        @PostMapping("/reservations/{id}/confirm")
+        String confirm() {
+            return "confirmed";
+        }
+
+        @GetMapping("/reservations")
+        String reservations() {
+            return "list";
+        }
+
+        @GetMapping("/reservations/{id}")
+        String reservation() {
+            return "one";
         }
 
         @GetMapping("/internal/probe")

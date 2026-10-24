@@ -13,6 +13,7 @@ import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
 import java.util.Date;
+import java.util.List;
 
 /**
  * A throwaway RSA key pair for the tests: no key material of the service is committed to this
@@ -47,13 +48,14 @@ final class RsaTestKey {
     }
 
     /**
-     * A token signed with this pair for the caller of a test: exactly what {@code dev-token.sh}
-     * of {@code csp-infra} hands out until the identity service exists.
+     * A token signed with this pair for the caller of a test, with the permissions of a
+     * {@code CLIENT} of the identity service that Booking checks on its client routes.
      */
     String token(String subject) {
         try {
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(subject)
+                    .claim("permissions", List.of("booking:create", "booking:read:self"))
                     .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                     .build();
             SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);

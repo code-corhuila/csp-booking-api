@@ -8,6 +8,12 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+### Fixed
+
+- The client routes now check the `permissions` claim of the access token (`booking:create` on `POST /holds` and on the confirmation,
+  `booking:read:self` on the two reads of reservations) and answer `403 FORBIDDEN` without it, and `exp` is accepted up to 30 seconds late
+  (Norma 5.3.7 and 5.6.2; `csp-booking-api#67`). The listing of every user (`booking:read:all`) has no route yet.
+
 ### Added
 
 - Client of the Catalog availability operation (`GET /showtimes/{showtimeId}/availability`): the output port `ShowtimeCatalog` and the adapter
