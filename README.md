@@ -126,6 +126,11 @@ The token is a JWT signed with RS256 with an `exp` and a `sub` that is **the UUI
 the envelope of the contract: `error`, `message`, the `details` that name the fields that broke a validation, and
 `traceId`.
 
+A client route also needs the permission of the `permissions` claim: `booking:create` for `POST /holds` and
+`POST /reservations/{id}/confirm`, and `booking:read:self` for `GET /reservations` and `GET /reservations/{id}`. A valid token
+without it is a `403 FORBIDDEN`. The `exp` is accepted up to 30 seconds late, for the clock difference between services (Norma 5.3.7).
+A token from `dev-token.sh` carries no `permissions`, so it gets `403` on those routes until infra adds them.
+
 **Idempotency.** `POST /holds` stores its `Idempotency-Key` with the hold, so repeating the request answers `200` with
 the original reservation (Norma 5.3.8), and the same key with another body is a `409`. `POST /reservations/{id}/confirm`
 requires the header and checks its shape (16 to 100 characters) but does not store it: a reservation is confirmed once
