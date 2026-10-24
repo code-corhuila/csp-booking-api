@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.interfaces.RSAPublicKey;
 import java.text.ParseException;
 import java.util.Date;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -28,7 +29,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /**
  * Validates the bearer token of every protected request by itself, as the norm demands
  * (5.3.7): RS256 verified with the public key of the identity service, any other algorithm
- * rejected, {@code exp} and {@code sub} mandatory, and the user of the request is the {@code sub}.
+ * rejected, {@code exp} (with {@value #CLOCK_SKEW_SECONDS} s of tolerance) and {@code sub} mandatory, and the
+ * user of the request is the {@code sub}. A client route also needs the permission of the
+ * {@code permissions} claim that {@link ClientRoutePermissions} lists for it, or it is a 403.
  * A rejected token answers the envelope of the contract and never reaches a controller.
  * <p>The health routes are the only public ones, as {@code booking-service.yaml} declares.
  */
@@ -45,6 +48,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String INTERNAL_PREFIX = "/internal/";
     private static final String WORKFLOW_PREFIX = "/internal/workflow/";
+    /** Tolerance on {@code exp} for the clock difference between services (Norma 5.3.7). */
+    static final long CLOCK_SKEW_SECONDS = 30;
+    private static final String PERMISSIONS_CLAIM = "permissions";
 
     private final RSAPublicKey publicKey;
     private final ObjectMapper objectMapper;
@@ -80,8 +86,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "UNAUTHORIZED", "Authentication token required");
             return;
         }
-        Optional<String> userId = userIdOf(header.substring(BEARER.length()).trim());
-        if (userId.isEmpty()) {
+        Optional<VerifiedToken> token = verify(header.substring(BEARER.length()).trim());
+        if (token.isEmpty()) {
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "INVALID_TOKEN", "the token is invalid or expired");
             return;
         }
@@ -91,17 +97,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         Set<String> allowed = path != null && path.startsWith(WORKFLOW_PREFIX) ? workflowSubjects
                 : path != null && path.startsWith(INTERNAL_PREFIX) ? serviceSubjects : Set.of();
         boolean internal = path != null && path.startsWith(INTERNAL_PREFIX);
-        if (internal ? !allowed.contains(userId.get()) : isServiceSubject(userId.get())) {
+        String subject = token.get().subject();
+        if (internal ? !allowed.contains(subject) : isServiceSubject(subject)) {
             writeError(response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN",
                     "the token is not allowed to call this operation");
             return;
         }
-        request.setAttribute(USER_ID_ATTRIBUTE, userId.get());
+        Optional<String> required = ClientRoutePermissions.requiredBy(request.getMethod(), path);
+        if (required.isPresent() && !token.get().permissions().contains(required.get())) {
+            writeError(response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN",
+                    "the token does not carry the permission this operation needs");
+            return;
+        }
+        request.setAttribute(USER_ID_ATTRIBUTE, subject);
         chain.doFilter(request, response);
     }
 
-    /** The {@code sub} of an acceptable token; empty when any rule of 5.3.7 is broken. */
-    Optional<String> userIdOf(String token) {
+    /** The {@code sub} and the permissions of an acceptable token; empty when any rule of 5.3.7 is broken. */
+    private Optional<VerifiedToken> verify(String token) {
         SignedJWT jwt;
         try {
             jwt = SignedJWT.parse(token);
@@ -134,7 +147,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: it has no exp claim");
             return Optional.empty();
         }
-        if (!expiresAt.after(new Date())) {
+        if (!expiresAt.after(new Date(System.currentTimeMillis() - CLOCK_SKEW_SECONDS * 1000))) {
             logger.debug("rejected token: it has expired");
             return Optional.empty();
         }
@@ -147,7 +160,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: its sub is not the id of a user of this platform");
             return Optional.empty();
         }
-        return Optional.of(subject);
+        return Optional.of(new VerifiedToken(subject, permissionsOf(claims)));
+    }
+
+    /** The permissions the token carries; a claim that is not a list of strings grants none. */
+    private static Set<String> permissionsOf(JWTClaimsSet claims) {
+        try {
+            List<String> permissions = claims.getStringListClaim(PERMISSIONS_CLAIM);
+            return permissions == null ? Set.of() : Set.copyOf(permissions);
+        } catch (ParseException | NullPointerException exception) {
+            return Set.of();
+        }
     }
 
     private boolean isServiceSubject(String subject) {
@@ -176,6 +199,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return uri;
         }
         return uri.substring(context.length());
+    }
+
+    private record VerifiedToken(String subject, Set<String> permissions) {
     }
 
     private void writeError(HttpServletResponse response, int status, String code, String message)
