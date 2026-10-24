@@ -18,6 +18,9 @@ one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW
 
 - The platform compose of `booking-api` now passes `CATALOG_BASE_URL` and `CATALOG_SERVICE_TOKEN_FILE` and mounts the service credential
   (`CATALOG_SERVICE_TOKEN_HOST_FILE`, read-only); before, the routes that read Catalog answered `503` in the platform (ADR-020).
+- The client routes now check the `permissions` claim of the access token (`booking:create` on `POST /holds` and on the confirmation,
+  `booking:read:self` on the two reads of reservations) and answer `403 FORBIDDEN` without it, and `exp` is accepted up to 30 seconds late
+  (Norma 5.3.7 and 5.6.2; `csp-booking-api#67`). The listing of every user (`booking:read:all`) has no route yet.
 
 ### Added
 
