@@ -41,6 +41,7 @@ class BookingApplicationTests {
     @DynamicPropertySource
     static void jwtKey(DynamicPropertyRegistry registry) {
         registry.add("jwt.public-key", JWT_KEY::publicKeyPem);
+        registry.add("WORKFLOW_SUBJECTS", () -> "csp-workflow");
     }
 
     @Autowired
@@ -107,6 +108,38 @@ class BookingApplicationTests {
 
         assertEquals(HttpStatus.BAD_REQUEST, answer.getStatusCode(), answer.getBody());
         assertTrue(answer.getBody().contains("\"error\":\"VALIDATION_ERROR\""), answer.getBody());
+    }
+
+    @Test
+    void theWorkflowRouteIsReachedByTheTokenOfItsFamilyAndByNoOtherOne() {
+        String route = "/internal/workflow/reservations/33333333-3333-3333-3333-333333333333/confirm";
+        HttpHeaders workflow = headers(JWT_KEY.token("csp-workflow"));
+        workflow.set("Idempotency-Key", "too-short");
+
+        ResponseEntity<String> reached = rest.postForEntity(route, new HttpEntity<>(workflow), String.class);
+        ResponseEntity<String> worker = rest.postForEntity(
+                route, new HttpEntity<>(headers(JWT_KEY.token("csp-worker"))), String.class);
+        ResponseEntity<String> client = rest.postForEntity(
+                route, new HttpEntity<>(headers(JWT_KEY.token(SUB))), String.class);
+
+        // The short key is refused by the controller, so a 400 proves the route and the family.
+        assertEquals(HttpStatus.BAD_REQUEST, reached.getStatusCode(), reached.getBody());
+        assertEquals(HttpStatus.FORBIDDEN, worker.getStatusCode(), worker.getBody());
+        assertEquals(HttpStatus.FORBIDDEN, client.getStatusCode(), client.getBody());
+    }
+
+    @Test
+    void theSeatMapRouteNeedsATokenAndWithoutCatalogAnswers503NotAMadeUpMap() {
+        String route = "/showtimes/33333333-3333-3333-3333-333333333333/seats";
+
+        ResponseEntity<String> anonymous = rest.getForEntity(route, String.class);
+        ResponseEntity<String> client = rest.exchange(route, org.springframework.http.HttpMethod.GET,
+                new HttpEntity<>(headers(JWT_KEY.token(SUB))), String.class);
+
+        assertEquals(HttpStatus.UNAUTHORIZED, anonymous.getStatusCode(), anonymous.getBody());
+        // CATALOG_BASE_URL is not set in this context: the layout cannot be read, so there is no map (ADR-020, ADR-046).
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, client.getStatusCode(), client.getBody());
+        assertTrue(client.getBody().contains("\"error\":\"SERVICE_UNAVAILABLE\""), client.getBody());
     }
 
     @Test

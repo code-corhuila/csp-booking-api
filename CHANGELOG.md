@@ -8,6 +8,39 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-20
+
+Internal routes of the workflow service on the Booking API (ADR-035, still proposed) and the CI pin of the schema. The schema is the
+one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW_SUBJECTS` is empty by default, so the
+`/internal/workflow/` family stays closed until the platform sets it.
+
+### Fixed
+
+- The platform compose of `booking-api` now passes `CATALOG_BASE_URL` and `CATALOG_SERVICE_TOKEN_FILE` and mounts the service credential
+  (`CATALOG_SERVICE_TOKEN_HOST_FILE`, read-only); before, the routes that read Catalog answered `503` in the platform (ADR-020).
+
+### Added
+
+- Client of the Catalog availability operation (`GET /showtimes/{showtimeId}/availability`): the output port `ShowtimeCatalog` and the adapter
+  `HttpShowtimeCatalog`, with the service credential read from `CATALOG_SERVICE_TOKEN_FILE` (re-read every 30 s), timeouts of 2 s and 3 s,
+  `404` as a showtime that is not available, timeout, connection error or `5xx` as an unavailable Catalog, `401` or `403` as a configuration
+  fault, and no layout invented when `seatLayout` is missing (ADR-020, ADR-046, `catalog-service.yaml` 1.9.0). No route uses it yet
+  (`csp-booking-api#62`, HU-CATALOG-005).
+- `GET /showtimes/{showtimeId}/seats`: the seat map for any authenticated role, the layout of Catalog with `AVAILABLE`, `HELD` or `CONFIRMED` per seat
+  (`seat_hold_item`, the same fact that makes a second hold of the seat fail; an overdue hold stays `HELD` until the sweep), `Cache-Control: no-store`,
+  `404` / `503` / `500` mapped from Catalog (ADR-046, `booking-service.yaml` 3.3.0; `csp-booking-api#62`, HU-CATALOG-005).
+- `WORKFLOW_SUBJECTS`: the service subjects allowed on `/internal/workflow/`, separate from `SERVICE_SUBJECTS` so the workflow service
+  never reaches the maintenance operations and the worker never reaches the workflow ones. Empty keeps the family closed (ADR-035, proposed).
+- `POST /internal/workflow/holds` and `POST /internal/workflow/reservations/{id}/confirm`, for the workflow service: the hold for the user
+  of the body, and a confirmation that is idempotent by state (ADR-035, proposed).
+- `POST /internal/workflow/reservations/{id}/release`: undoes a hold on demand, with the effect and the `ReservationExpired` event of
+  the expiration sweep and without waiting for the deadline (ADR-035, proposed).
+
+### Changed
+
+- The CI checks out `csp-booking-db` at the release tag `v2.0.0` instead of a commit.
+  ([#55](https://github.com/code-corhuila/csp-booking-api/pull/55))
+
 ## [2.0.0] - 2026-10-08
 
 MVP 2 (Cut 2). Stories HU-BOOKING-001 ([#8](https://github.com/code-corhuila/csp-booking-api/issues/8)), HU-BOOKING-002

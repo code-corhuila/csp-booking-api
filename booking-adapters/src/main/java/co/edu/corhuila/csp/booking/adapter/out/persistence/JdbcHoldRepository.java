@@ -7,10 +7,12 @@ import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.SeatOccupancy;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
+import co.edu.corhuila.csp.booking.domain.model.SeatStatus;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Array;
@@ -40,7 +42,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * concurrent clients cannot double-book or double-charge a retry.
  */
 @Repository
-public class JdbcHoldRepository implements HoldRepository {
+public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
 
     private static final String AGGREGATE_TYPE = "Reservation";
     private static final String EVENT_TYPE = "ReservationHeld";
@@ -134,6 +136,20 @@ public class JdbcHoldRepository implements HoldRepository {
         return first(RESERVATION_SELECT + "WHERE r.id = ?" + GROUP_BY_RESERVATION, reservationId);
     }
 
+    /**
+     * The seats {@code uk_seat_hold_item_active_seat} covers: the ones a second hold would be refused. An overdue hold
+     * stays {@code HELD} until the sweep releases it, exactly as for the hold itself (ADR-046).
+     */
+    @Override
+    public Map<String, SeatStatus> takenSeats(UUID showtimeId) {
+        Map<String, SeatStatus> taken = new LinkedHashMap<>();
+        jdbc.query("SELECT seat_number, status FROM booking.seat_hold_item WHERE showtime_id = ? "
+                + "AND status IN ('HELD', 'CONFIRMED')", rs -> {
+                    taken.put(rs.getString("seat_number"), SeatStatus.valueOf(rs.getString("status")));
+                }, showtimeId);
+        return taken;
+    }
+
     @Override
     public ReservationPage findByUser(UUID userId, ReservationQuery query) {
         List<Object> arguments = new ArrayList<>();
@@ -159,7 +175,13 @@ public class JdbcHoldRepository implements HoldRepository {
     @Override
     public void expire(Reservation expired, Instant now, String correlationId) {
         String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
-        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation));
+        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation, true));
+    }
+
+    @Override
+    public void releaseHeld(Reservation released, Instant now, String correlationId) {
+        String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        transactionTemplate.executeWithoutResult(status -> release(released, now, correlation, false));
     }
 
     @Override
@@ -200,17 +222,22 @@ public class JdbcHoldRepository implements HoldRepository {
      * whose status is HELD or CONFIRMED, so a seat only becomes available for a new hold when its
      * row leaves that set. Every statement carries a {@code status = 'HELD'} guard, so a
      * confirmation that won the race is never overwritten and a sweep that runs twice is a no-op.
+     * The sweep also requires the hold to be overdue; a release on demand (ADR-035) does not.
      */
-    private void release(Reservation expired, Instant now, String correlationId) {
+    private void release(Reservation expired, Instant now, String correlationId, boolean mustBeOverdue) {
         int expiredReservations = jdbc.update("""
                 UPDATE booking.reservation r SET status = 'EXPIRED'
                 WHERE r.id = ?
                   AND r.status = 'HELD'
                   AND EXISTS (SELECT 1 FROM booking.seat_hold h
                               WHERE h.id = r.hold_id
-                                AND h.expires_at <= ?)""",
-                expired.id(), at(now));
+                                AND (? = FALSE OR h.expires_at <= ?))""",
+                expired.id(), mustBeOverdue, at(now));
         if (expiredReservations == 0) {
+            if (!mustBeOverdue) {
+                throw new InvalidStatusTransitionException(
+                        "the reservation " + expired.id() + " is no longer a HELD reservation");
+            }
             throw new HoldNoLongerOverdueException(
                     "the reservation " + expired.id() + " is no longer an overdue HELD reservation");
         }
