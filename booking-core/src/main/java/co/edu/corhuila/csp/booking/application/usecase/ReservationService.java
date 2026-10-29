@@ -7,8 +7,11 @@ import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.ExpireHoldsResult;
 import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
+import co.edu.corhuila.csp.booking.application.port.out.LayoutSeat;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeCatalog;
+import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
@@ -22,6 +25,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -33,25 +37,42 @@ import java.util.stream.Collectors;
 public class ReservationService implements ReservationUseCases {
 
     private final HoldRepository holds;
+    private final ShowtimeCatalog catalog;
     private final Clock clock;
 
-    public ReservationService(HoldRepository holds, Clock clock) {
+    public ReservationService(HoldRepository holds, ShowtimeCatalog catalog, Clock clock) {
         this.holds = holds;
+        this.catalog = catalog;
         this.clock = clock;
     }
 
     @Override
     public CreateHoldResult createHold(CreateHoldInput input) {
-        // Cut 2 runs without CATALOG_BASE_URL: the title and the room are the values of the
-        // request and the start time of the showtime stays null (ADR-020). The platform stores
-        // microseconds, so the hold starts at one: a replay must answer the exact instant the
-        // first answer did.
+        requireSeatsInLayout(input);
+        // The title and the room are still the values of the request and the start time of the showtime stays null
+        // (TD-040). The platform stores microseconds, so the hold starts at one: a replay must answer the exact
+        // instant the first answer did.
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         Reservation reservation = Reservation.hold(UUID.randomUUID(), input.userId(), input.showtimeId(),
                 input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, input.movieTitle(),
                 input.roomName(), 0);
         return holds.create(
                 new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId()));
+    }
+
+    /**
+     * A seat that Catalog does not list for the showtime is never held (STRIDE T, csp-docs#289). Catalog is the
+     * authority of the layout, so when it cannot answer the hold fails instead of trusting the request.
+     */
+    private void requireSeatsInLayout(CreateHoldInput input) {
+        Set<String> layout = catalog.layoutOf(input.showtimeId(), input.correlationId()).seats().stream()
+                .map(LayoutSeat::label)
+                .collect(Collectors.toSet());
+        List<String> unknown = input.seatLabels().stream().filter(label -> !layout.contains(label)).toList();
+        if (!unknown.isEmpty()) {
+            throw new BusinessRuleViolationException(
+                    "The seats " + String.join(", ", unknown) + " are not in the layout of the showtime");
+        }
     }
 
     @Override

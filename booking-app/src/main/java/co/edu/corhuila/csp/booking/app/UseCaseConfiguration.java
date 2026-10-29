@@ -24,8 +24,8 @@ public class UseCaseConfiguration {
     }
 
     @Bean
-    ReservationUseCases reservationUseCases(HoldRepository holds, Clock clock) {
-        return new ReservationService(holds, clock);
+    ReservationUseCases reservationUseCases(HoldRepository holds, ShowtimeCatalog catalog, Clock clock) {
+        return new ReservationService(holds, catalog, clock);
     }
 
     @Bean
