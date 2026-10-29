@@ -14,6 +14,11 @@ Internal routes of the workflow service on the Booking API (ADR-035, still propo
 one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW_SUBJECTS` is empty by default, so the
 `/internal/workflow/` family stays closed until the platform sets it.
 
+### Fixed
+
+- The platform compose of `booking-api` now passes `CATALOG_BASE_URL` and `CATALOG_SERVICE_TOKEN_FILE` and mounts the service credential
+  (`CATALOG_SERVICE_TOKEN_HOST_FILE`, read-only); before, the routes that read Catalog answered `503` in the platform (ADR-020).
+
 ### Added
 
 - Client of the Catalog availability operation (`GET /showtimes/{showtimeId}/availability`): the output port `ShowtimeCatalog` and the adapter
