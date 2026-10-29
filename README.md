@@ -176,9 +176,10 @@ tagged yet, point `ref` at its commit in the branch of that Pull Request and put
 
 - **No gateway.** Nothing routes `/api/v1/booking` yet and the service has no CORS configuration, so a browser cannot
   call it directly; the portals expect the gateway of Annex F.
-- **No Catalog snapshot.** The hold does not read Catalog yet (Cut 2): `movieTitle` and `roomName` come in the
-  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020). Only the seat map
-  reads Catalog (`CATALOG_BASE_URL`, ADR-046).
+- **No Catalog snapshot.** The hold takes no snapshot from Catalog (TD-040): `movieTitle` and `roomName` come in the
+  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020). The hold does read
+  the layout of the showtime to refuse a seat that is not in it (`422`, nothing held; `404` for a showtime Catalog does not
+  know), so without `CATALOG_BASE_URL`, or with Catalog down, `POST /holds` answers `503` (`csp-docs#289`).
 - **No replay of a confirmation.** See the idempotency note above.
 - **No release of a hold by the client.** The contract 3.1.0 has no such route; a hold ends by confirmation or expiration.
 - **The outbox has no purge** and nothing deletes from it (`csp-booking-db#18`).

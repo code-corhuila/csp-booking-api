@@ -8,6 +8,12 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+### Changed
+
+- `POST /holds` and `POST /internal/workflow/holds` read the layout of the showtime from Catalog and refuse with `422 BUSINESS_RULE_VIOLATION`,
+  holding nothing, a seat that is not in it (STRIDE T, `csp-docs#289`). Catalog is the authority: without `CATALOG_BASE_URL` or with
+  Catalog down the hold answers `503`, and an unknown showtime `404`. TLS towards Catalog is still pending its ADR.
+
 ### Fixed
 
 - The platform compose of `booking-api` now passes `CATALOG_BASE_URL` and `CATALOG_SERVICE_TOKEN_FILE` and mounts the service credential
