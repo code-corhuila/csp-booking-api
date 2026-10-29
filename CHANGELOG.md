@@ -21,6 +21,9 @@ one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW
   and is never a service credential); a valid credential of a subject that is not allowed on the route answers `403`. A token issued before the
   change, without the claims, is refused, so the credentials of `csp-worker` and `csp-workflow` must be reissued first (ADR-056,
   `csp-booking-api#69`).
+- `POST /holds` and `POST /internal/workflow/holds` read the layout of the showtime from Catalog and refuse with `422 BUSINESS_RULE_VIOLATION`,
+  holding nothing, a seat that is not in it (STRIDE T, `csp-docs#289`). Catalog is the authority: without `CATALOG_BASE_URL` or with
+  Catalog down the hold answers `503`, and an unknown showtime `404`. TLS towards Catalog is still pending its ADR.
 
 ### Fixed
 
