@@ -17,6 +17,14 @@ services:
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?set SPRING_DATASOURCE_URL in .env or in the platform}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set SPRING_DATASOURCE_USERNAME in .env or in the platform}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env or in the platform}
+      # Catalog (ADR-020): base of its API inside the platform network, for example
+      # http://catalog-api:8082/api/v1/catalog. Empty keeps the routes that read Catalog answering 503;
+      # when set, the token file is required.
+      CATALOG_BASE_URL: ${CATALOG_BASE_URL:-}
+      CATALOG_SERVICE_TOKEN_FILE: ${CATALOG_SERVICE_TOKEN_FILE:-}
+    volumes:
+      # Service credential (sub booking-service) that the secret manager rotates; the host path comes from the platform.
+      - ${CATALOG_SERVICE_TOKEN_HOST_FILE:-/dev/null}:/run/secrets/catalog-service-token:ro
     # expose, not ports: only the gateway is reachable from the host.
     expose: ["8083"]
     # /health has no dependencies (DEC-005), so it only says that the process answers; the base path is
