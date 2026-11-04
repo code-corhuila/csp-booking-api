@@ -32,6 +32,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * rejected, {@code exp} (with {@value #CLOCK_SKEW_SECONDS} s of tolerance) and {@code sub} mandatory, and the
  * user of the request is the {@code sub}. A client route also needs the permission of the
  * {@code permissions} claim that {@link ClientRoutePermissions} lists for it, or it is a 403.
+ * A service credential (the token of a subject of {@code SERVICE_SUBJECTS} or {@code WORKFLOW_SUBJECTS})
+ * must also carry {@code iss} {@value #SERVICE_ISSUER} and an {@code aud} that contains
+ * {@value #SERVICE_AUDIENCE}, or it is a 401: a user's access token ({@code aud} {@code csp-api}) is never a
+ * service credential, even with an allowed {@code sub} (ADR-056).
  * A rejected token answers the envelope of the contract and never reaches a controller.
  * <p>The health routes are the only public ones, as {@code booking-service.yaml} declares.
  */
@@ -51,6 +55,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     /** Tolerance on {@code exp} for the clock difference between services (Norma 5.3.7). */
     static final long CLOCK_SKEW_SECONDS = 30;
     private static final String PERMISSIONS_CLAIM = "permissions";
+    /** Issuer and audience of every service credential (ADR-056). */
+    static final String SERVICE_ISSUER = "csp-auth";
+    static final String SERVICE_AUDIENCE = "csp-internal";
 
     private final RSAPublicKey publicKey;
     private final ObjectMapper objectMapper;
@@ -97,8 +104,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         Set<String> allowed = path != null && path.startsWith(WORKFLOW_PREFIX) ? workflowSubjects
                 : path != null && path.startsWith(INTERNAL_PREFIX) ? serviceSubjects : Set.of();
         boolean internal = path != null && path.startsWith(INTERNAL_PREFIX);
-        String subject = token.get().subject();
-        if (internal ? !allowed.contains(subject) : isServiceSubject(subject)) {
+        VerifiedToken verified = token.get();
+        String subject = verified.subject();
+        if (internal ? !allowed.contains(subject) : verified.serviceCredential() || isServiceSubject(subject)) {
             writeError(response, HttpServletResponse.SC_FORBIDDEN, "FORBIDDEN",
                     "the token is not allowed to call this operation");
             return;
@@ -156,11 +164,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: it has no sub claim");
             return Optional.empty();
         }
-        if (!isServiceSubject(subject) && !isId(subject)) {
+        boolean serviceCredential = carriesServiceClaims(claims);
+        if (isServiceSubject(subject) && !serviceCredential) {
+            logger.debug("rejected token: the sub is a service subject but iss and aud are not those of a service credential");
+            return Optional.empty();
+        }
+        if (!serviceCredential && !isServiceSubject(subject) && !isId(subject)) {
             logger.debug("rejected token: its sub is not the id of a user of this platform");
             return Optional.empty();
         }
-        return Optional.of(new VerifiedToken(subject, permissionsOf(claims)));
+        return Optional.of(new VerifiedToken(subject, permissionsOf(claims), serviceCredential));
+    }
+
+    /** {@code iss} equal to {@value #SERVICE_ISSUER} and an {@code aud} that contains {@value #SERVICE_AUDIENCE} (ADR-056). */
+    private static boolean carriesServiceClaims(JWTClaimsSet claims) {
+        List<String> audience = claims.getAudience();
+        return SERVICE_ISSUER.equals(claims.getIssuer()) && audience != null && audience.contains(SERVICE_AUDIENCE);
     }
 
     /** The permissions the token carries; a claim that is not a list of strings grants none. */
@@ -201,7 +220,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return uri.substring(context.length());
     }
 
-    private record VerifiedToken(String subject, Set<String> permissions) {
+    private record VerifiedToken(String subject, Set<String> permissions, boolean serviceCredential) {
     }
 
     private void writeError(HttpServletResponse response, int status, String code, String message)
