@@ -164,7 +164,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aServiceTokenCallsAnInternalOperation() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-worker"));
 
         mockMvc.perform(get("/internal/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -183,7 +183,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aServiceTokenCallingAClientOperationReceivesForbidden() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-worker"));
 
         mockMvc.perform(get("/holds")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -212,7 +212,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aWorkflowTokenCallsAWorkflowOperation() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-workflow"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-workflow"));
 
         mockMvc.perform(get("/internal/workflow/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -221,7 +221,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aWorkflowTokenCallingAMaintenanceOperationReceivesForbidden() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-workflow"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-workflow"));
 
         mockMvc.perform(get("/internal/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -231,7 +231,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aMaintenanceTokenCallingAWorkflowOperationReceivesForbidden() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-worker"));
 
         mockMvc.perform(get("/internal/workflow/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -251,7 +251,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aWorkflowTokenCallingAClientOperationReceivesForbidden() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-workflow"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-workflow"));
 
         mockMvc.perform(get("/holds")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -265,11 +265,15 @@ class JwtAuthenticationFilterTest {
 
         closed.perform(get("/internal/workflow/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, serviceClaims("csp-workflow"))))
+                .andExpect(status().isForbidden());
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
                                 "Bearer " + rs256Token(servicePrivateKey, claimsOf("csp-workflow"))))
                 .andExpect(status().isUnauthorized());
         closed.perform(get("/internal/workflow/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
-                                "Bearer " + rs256Token(servicePrivateKey, claimsOf("csp-worker"))))
+                                "Bearer " + rs256Token(servicePrivateKey, serviceClaims("csp-worker"))))
                 .andExpect(status().isForbidden());
         closed.perform(get("/internal/workflow/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
@@ -383,6 +387,77 @@ class JwtAuthenticationFilterTest {
                 .claim("permissions", List.of(permissions))
                 .build();
         return rs256Token(servicePrivateKey, claims);
+    }
+
+    @Test
+    void aServiceTokenWithoutIssuerIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").issuer(null).build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWithAnotherIssuerIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").issuer("another-issuer").build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWithoutAudienceIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience((String) null).build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWithAnotherAudienceIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience("another-audience").build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aUsersAccessTokenWithAServiceSubjectIsNotAServiceCredential() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience("csp-api").build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWhoseAudienceListContainsTheInternalOneIsAccepted() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience(List.of("csp-api", "csp-internal")).build();
+
+        callsInternalWith(claims).andExpect(status().isOk());
+    }
+
+    @Test
+    void aValidCredentialOfASubjectThatIsNotAllowedReceivesForbidden() throws Exception {
+        JWTClaimsSet claims = serviceClaims("booking-service");
+
+        callsInternalWith(claims).andExpect(status().isForbidden()).andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions callsInternalWith(JWTClaimsSet claims) throws Exception {
+        return mockMvc.perform(get("/internal/probe").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                "Bearer " + rs256Token(servicePrivateKey, claims)));
+    }
+
+    /** The claims of a service credential issued by the identity service (ADR-052, ADR-056). */
+    private static JWTClaimsSet.Builder serviceClaimsBuilder(String subject) {
+        return new JWTClaimsSet.Builder()
+                .subject(subject)
+                .issuer("csp-auth")
+                .audience("csp-internal")
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000));
+    }
+
+    private static JWTClaimsSet serviceClaims(String subject) {
+        return serviceClaimsBuilder(subject).build();
     }
 
     private static JWTClaimsSet claimsOf(String subject) {
