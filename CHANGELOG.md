@@ -27,6 +27,8 @@ one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW
 
 ### Fixed
 
+- The platform compose of `booking-api` now passes `SERVICE_SUBJECTS` (default `csp-worker`) and `WORKFLOW_SUBJECTS` (default empty); before, they could not be
+  set from the platform, so `/internal/workflow/` stayed closed there whatever the platform declared (ADR-035, `csp-booking-api#69`).
 - The platform compose of `booking-api` now passes `CATALOG_BASE_URL` and `CATALOG_SERVICE_TOKEN_FILE` and mounts the service credential
   (`CATALOG_SERVICE_TOKEN_HOST_FILE`, read-only); before, the routes that read Catalog answered `503` in the platform (ADR-020).
 - The client routes now check the `permissions` claim of the access token (`booking:create` on `POST /holds` and on the confirmation,
