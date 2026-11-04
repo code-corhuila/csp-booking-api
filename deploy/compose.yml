@@ -22,6 +22,10 @@ services:
       # when set, the token file is required.
       CATALOG_BASE_URL: ${CATALOG_BASE_URL:-}
       CATALOG_SERVICE_TOKEN_FILE: ${CATALOG_SERVICE_TOKEN_FILE:-}
+      # Subjects (sub) of the service credentials allowed on /internal/maintenance/ (the worker) and on
+      # /internal/workflow/ (the workflow service, ADR-035). Empty WORKFLOW_SUBJECTS keeps that family closed.
+      SERVICE_SUBJECTS: ${SERVICE_SUBJECTS:-csp-worker}
+      WORKFLOW_SUBJECTS: ${WORKFLOW_SUBJECTS:-}
     volumes:
       # Service credential (sub booking-service) that the secret manager rotates; the host path comes from the platform.
       - ${CATALOG_SERVICE_TOKEN_HOST_FILE:-/dev/null}:/run/secrets/catalog-service-token:ro
