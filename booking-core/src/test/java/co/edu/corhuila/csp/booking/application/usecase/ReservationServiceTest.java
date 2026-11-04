@@ -8,12 +8,17 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
+import co.edu.corhuila.csp.booking.application.port.out.CatalogUnavailableException;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
+import co.edu.corhuila.csp.booking.application.port.out.LayoutSeat;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeCatalog;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeLayout;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeNotAvailableException;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
@@ -40,8 +45,13 @@ class ReservationServiceTest {
     private static final String KEY = "44444444-4444-4444-4444-444444444444";
     private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
 
+    private static final ShowtimeLayout LAYOUT = new ShowtimeLayout(SHOWTIME, "Movie", "Room 1",
+            Instant.parse("2026-11-01T20:00:00Z"), Instant.parse("2026-11-01T22:00:00Z"), 12000,
+            List.of(new LayoutSeat("A1", "A", 1, "STANDARD"), new LayoutSeat("A2", "A", 2, "STANDARD")));
+
     private final FakeHolds holds = new FakeHolds();
-    private final ReservationService service = new ReservationService(holds, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final ShowtimeCatalog catalog = (showtimeId, correlationId) -> LAYOUT;
+    private final ReservationService service = new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC));
 
     @Test
     void aHoldStartsAtTheClockWithTheSnapshotOfTheRequestAndNoAmount() {
@@ -66,8 +76,53 @@ class ReservationServiceTest {
     }
 
     @Test
+    void aSeatThatIsNotInTheLayoutOfCatalogIsRefusedAndNothingIsHeld() {
+        CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), "Movie", "Room 1", 600,
+                KEY, CORRELATION);
+
+        BusinessRuleViolationException refused = assertThrows(BusinessRuleViolationException.class,
+                () -> service.createHold(withUnknownSeat));
+
+        assertEquals("The seats Z9 are not in the layout of the showtime", refused.getMessage());
+        assertNull(holds.stored);
+    }
+
+    @Test
+    void theLayoutIsReadForTheShowtimeOfTheRequestWithItsCorrelationId() {
+        List<String> asked = new ArrayList<>();
+        ReservationService spying = new ReservationService(holds, (showtimeId, correlationId) -> {
+            asked.add(showtimeId + "|" + correlationId);
+            return LAYOUT;
+        }, Clock.fixed(NOW, ZoneOffset.UTC));
+
+        spying.createHold(input());
+
+        assertEquals(List.of(SHOWTIME + "|" + CORRELATION), asked);
+    }
+
+    @Test
+    void aCatalogThatCannotAnswerHoldsNothing() {
+        ReservationService blind = new ReservationService(holds, (showtimeId, correlationId) -> {
+            throw new CatalogUnavailableException("down");
+        }, Clock.fixed(NOW, ZoneOffset.UTC));
+
+        assertThrows(CatalogUnavailableException.class, () -> blind.createHold(input()));
+        assertNull(holds.stored);
+    }
+
+    @Test
+    void aShowtimeThatCatalogDoesNotKnowHoldsNothing() {
+        ReservationService unknown = new ReservationService(holds, (showtimeId, correlationId) -> {
+            throw new ShowtimeNotAvailableException(showtimeId);
+        }, Clock.fixed(NOW, ZoneOffset.UTC));
+
+        assertThrows(ShowtimeNotAvailableException.class, () -> unknown.createHold(input()));
+        assertNull(holds.stored);
+    }
+
+    @Test
     void theHoldStartsAtThePrecisionThePlatformStoresSoThatAReplayMatchesTheFirstAnswer() {
-        ReservationService withNanoseconds = new ReservationService(holds, Clock.fixed(NOW.plusNanos(123),
+        ReservationService withNanoseconds = new ReservationService(holds, catalog, Clock.fixed(NOW.plusNanos(123),
                 ZoneOffset.UTC));
 
         withNanoseconds.createHold(input());
@@ -217,7 +272,7 @@ class ReservationServiceTest {
 
     @Test
     void theConfirmationInstantHasThePrecisionThePlatformStores() {
-        ReservationService withNanoseconds = new ReservationService(holds, Clock.fixed(NOW.plusNanos(123),
+        ReservationService withNanoseconds = new ReservationService(holds, catalog, Clock.fixed(NOW.plusNanos(123),
                 ZoneOffset.UTC));
         Reservation held = reservationOf(USER);
         holds.found = Optional.of(held);
