@@ -113,12 +113,12 @@ class BookingApplicationTests {
     @Test
     void theWorkflowRouteIsReachedByTheTokenOfItsFamilyAndByNoOtherOne() {
         String route = "/internal/workflow/reservations/33333333-3333-3333-3333-333333333333/confirm";
-        HttpHeaders workflow = headers(JWT_KEY.token("csp-workflow"));
+        HttpHeaders workflow = headers(JWT_KEY.serviceToken("csp-workflow"));
         workflow.set("Idempotency-Key", "too-short");
 
         ResponseEntity<String> reached = rest.postForEntity(route, new HttpEntity<>(workflow), String.class);
         ResponseEntity<String> worker = rest.postForEntity(
-                route, new HttpEntity<>(headers(JWT_KEY.token("csp-worker"))), String.class);
+                route, new HttpEntity<>(headers(JWT_KEY.serviceToken("csp-worker"))), String.class);
         ResponseEntity<String> client = rest.postForEntity(
                 route, new HttpEntity<>(headers(JWT_KEY.token(SUB))), String.class);
 
