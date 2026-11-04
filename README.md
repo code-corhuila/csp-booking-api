@@ -126,6 +126,11 @@ The token is a JWT signed with RS256 with an `exp` and a `sub` that is **the UUI
 the envelope of the contract: `error`, `message`, the `details` that name the fields that broke a validation, and
 `traceId`.
 
+A client route also needs the permission of the `permissions` claim: `booking:create` for `POST /holds` and
+`POST /reservations/{id}/confirm`, and `booking:read:self` for `GET /reservations` and `GET /reservations/{id}`. A valid token
+without it is a `403 FORBIDDEN`. The `exp` is accepted up to 30 seconds late, for the clock difference between services (Norma 5.3.7).
+A token from `dev-token.sh` carries no `permissions`, so it gets `403` on those routes until infra adds them.
+
 **Idempotency.** `POST /holds` stores its `Idempotency-Key` with the hold, so repeating the request answers `200` with
 the original reservation (Norma 5.3.8), and the same key with another body is a `409`. `POST /reservations/{id}/confirm`
 requires the header and checks its shape (16 to 100 characters) but does not store it: a reservation is confirmed once
@@ -136,7 +141,9 @@ and `BookingConfirmed` is written once, because the transition is guarded, so a 
 
 Not part of the public contract and never routed by the gateway: they take a service token. `csp-worker` calls the maintenance
 ones (`SERVICE_SUBJECTS`) and `csp-workflow` the workflow ones (`WORKFLOW_SUBJECTS`, ADR-035); a token of the other family or a
-client token receives `403`.
+client token receives `403`. A service credential must carry `iss` `csp-auth` and an `aud` that contains `csp-internal` (ADR-056);
+a token whose `sub` is a service subject but lacks either claim, or has another value (a user's access token has `aud` `csp-api`),
+receives `401`, and a valid credential of a subject that the route does not allow receives `403`.
 
 | Route | Answer |
 |---|---|
@@ -145,7 +152,7 @@ client token receives `403`.
 | `POST /internal/workflow/reservations/{id}/confirm` | Confirms a reservation of any user. Idempotent by state: an already `CONFIRMED` one answers `200` and writes no second event. `404`, `422` for an expired one |
 | `POST /internal/workflow/reservations/{id}/release` | Releases a HELD reservation of any user before its deadline: `EXPIRED`, seats available again, one `ReservationExpired`. An already `EXPIRED` one answers `200` and writes nothing; a `CONFIRMED` one is `422`. `404` |
 
-- **Authentication:** the same RS256 validation as every route. The `sub` of the token must be one of `SERVICE_SUBJECTS`
+- **Authentication:** the same RS256 validation as every route, plus `iss` `csp-auth` and `aud` containing `csp-internal` (ADR-056). The `sub` of the token must be one of `SERVICE_SUBJECTS`
   (`csp-worker` by default); `X-Correlation-Id` is required and travels to the event.
 - **Limits (Norma 5.3.10):** one call expires at most 100 holds, oldest first; `remaining` tells the worker whether
   another run is needed. The interval between runs belongs to `csp-worker`.
