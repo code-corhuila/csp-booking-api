@@ -48,6 +48,26 @@ final class RsaTestKey {
     }
 
     /**
+     * A service credential as {@code auth-token} issues it (ADR-052, ADR-056): {@code iss} {@code csp-auth},
+     * {@code aud} {@code csp-internal}, no permissions.
+     */
+    String serviceToken(String subject) {
+        try {
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                    .subject(subject)
+                    .issuer("csp-auth")
+                    .audience("csp-internal")
+                    .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                    .build();
+            SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+            jwt.sign(new RSASSASigner((RSAPrivateKey) keyPair.getPrivate()));
+            return jwt.serialize();
+        } catch (JOSEException exception) {
+            throw new IllegalStateException("the service token of the test could not be signed", exception);
+        }
+    }
+
+    /**
      * A token signed with this pair for the caller of a test, with the permissions of a
      * {@code CLIENT} of the identity service that Booking checks on its client routes.
      */
