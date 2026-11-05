@@ -19,7 +19,7 @@ import org.hibernate.validator.constraints.UniqueElements;
  */
 public record CreateHoldRequest(
         @NotNull UUID showtimeId,
-        @NotEmpty @UniqueElements List<@NotBlank @Size(max = 10) String> seatLabels,
+        @NotEmpty @Size(max = 10) @UniqueElements List<@NotBlank @Size(max = 10) String> seatLabels,
         @NotBlank @Size(max = 255) String movieTitle,
         @NotBlank @Size(max = 255) String roomName,
         @Min(60) @Max(900) Integer holdDurationSeconds) {
