@@ -26,6 +26,8 @@ services:
       # /internal/workflow/ (the workflow service, ADR-035). Empty WORKFLOW_SUBJECTS keeps that family closed.
       SERVICE_SUBJECTS: ${SERVICE_SUBJECTS:-csp-worker}
       WORKFLOW_SUBJECTS: ${WORKFLOW_SUBJECTS:-}
+      # Most HELD reservations one user may have; the next hold answers 422 (DEC-008).
+      MAX_ACTIVE_HOLDS_PER_USER: ${MAX_ACTIVE_HOLDS_PER_USER:-5}
     volumes:
       # Service credential (sub booking-service) that the secret manager rotates; the host path comes from the platform.
       - ${CATALOG_SERVICE_TOKEN_HOST_FILE:-/dev/null}:/run/secrets/catalog-service-token:ro
