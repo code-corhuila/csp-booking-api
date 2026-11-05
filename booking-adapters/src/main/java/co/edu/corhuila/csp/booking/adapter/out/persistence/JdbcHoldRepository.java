@@ -85,6 +85,14 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
             VALUES (?, ?, ?, ?, ?::jsonb, ?)
             """;
 
+    /** Serializes the holds of one user for the length of the transaction, so the count below cannot be passed twice. */
+    private static final String LOCK_USER_HOLDS = "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))";
+
+    /** The {@code HELD} reservations of a user: an overdue one counts until the sweep releases it, like its seats. */
+    private static final String COUNT_HELD_OF_USER = """
+            SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'
+            """;
+
     private static final String FIND_STORED_KEY = """
             SELECT hold_id, request_hash FROM booking.idempotency_key WHERE "key" = ?
             """;
@@ -270,6 +278,21 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
         return jdbc.query(sql, this::toReservation, arguments).stream().findFirst();
     }
 
+    /**
+     * The limit of held reservations per user (DEC-008, STRIDE D). It runs after the idempotency key is stored, so the
+     * replay of a request that already made its hold is answered before it and never refused, and under a lock of
+     * the user, so two concurrent holds of one user cannot both pass the count.
+     */
+    private void requireRoomForAnotherHold(CreateHoldCommand command) {
+        String user = command.reservation().userId().toString();
+        jdbc.queryForObject(LOCK_USER_HOLDS, Object.class, user);
+        long held = jdbc.queryForObject(COUNT_HELD_OF_USER, Long.class, command.reservation().userId());
+        if (held >= command.maxActiveHolds()) {
+            throw new BusinessRuleViolationException(
+                    "The user already has the maximum of " + command.maxActiveHolds() + " held reservations");
+        }
+    }
+
     private CreateHoldResult insert(CreateHoldCommand command, TransactionStatus status) {
         Reservation reservation = command.reservation();
         insertSeatHold(reservation);
@@ -278,6 +301,7 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
             status.setRollbackOnly();
             return originalOf(command);
         }
+        requireRoomForAnotherHold(command);
         insertHoldItems(reservation);
         insertReservation(reservation);
         insertReservationSeats(reservation);

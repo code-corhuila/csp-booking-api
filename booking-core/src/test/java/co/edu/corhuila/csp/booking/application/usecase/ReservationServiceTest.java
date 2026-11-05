@@ -44,6 +44,7 @@ class ReservationServiceTest {
     private static final UUID SHOWTIME = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final String KEY = "44444444-4444-4444-4444-444444444444";
     private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
+    private static final int MAX_ACTIVE_HOLDS = 5;
 
     private static final ShowtimeLayout LAYOUT = new ShowtimeLayout(SHOWTIME, "Movie", "Room 1",
             Instant.parse("2026-11-01T20:00:00Z"), Instant.parse("2026-11-01T22:00:00Z"), 12000,
@@ -51,7 +52,7 @@ class ReservationServiceTest {
 
     private final FakeHolds holds = new FakeHolds();
     private final ShowtimeCatalog catalog = (showtimeId, correlationId) -> LAYOUT;
-    private final ReservationService service = new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final ReservationService service = new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
     @Test
     void aHoldStartsAtTheClockWithTheSnapshotOfTheRequestAndNoAmount() {
@@ -76,6 +77,19 @@ class ReservationServiceTest {
     }
 
     @Test
+    void theHoldAsksTheRepositoryToApplyTheLimitOfActiveHoldsOfTheUser() {
+        service.createHold(input());
+
+        assertEquals(MAX_ACTIVE_HOLDS, holds.stored.maxActiveHolds());
+    }
+
+    @Test
+    void aLimitBelowOneHoldIsRefusedWhenTheServiceIsBuilt() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC), 0));
+    }
+
+    @Test
     void aSeatThatIsNotInTheLayoutOfCatalogIsRefusedAndNothingIsHeld() {
         CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), "Movie", "Room 1", 600,
                 KEY, CORRELATION);
@@ -93,7 +107,7 @@ class ReservationServiceTest {
         ReservationService spying = new ReservationService(holds, (showtimeId, correlationId) -> {
             asked.add(showtimeId + "|" + correlationId);
             return LAYOUT;
-        }, Clock.fixed(NOW, ZoneOffset.UTC));
+        }, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
         spying.createHold(input());
 
@@ -104,7 +118,7 @@ class ReservationServiceTest {
     void aCatalogThatCannotAnswerHoldsNothing() {
         ReservationService blind = new ReservationService(holds, (showtimeId, correlationId) -> {
             throw new CatalogUnavailableException("down");
-        }, Clock.fixed(NOW, ZoneOffset.UTC));
+        }, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
         assertThrows(CatalogUnavailableException.class, () -> blind.createHold(input()));
         assertNull(holds.stored);
@@ -114,7 +128,7 @@ class ReservationServiceTest {
     void aShowtimeThatCatalogDoesNotKnowHoldsNothing() {
         ReservationService unknown = new ReservationService(holds, (showtimeId, correlationId) -> {
             throw new ShowtimeNotAvailableException(showtimeId);
-        }, Clock.fixed(NOW, ZoneOffset.UTC));
+        }, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
         assertThrows(ShowtimeNotAvailableException.class, () -> unknown.createHold(input()));
         assertNull(holds.stored);
@@ -123,7 +137,7 @@ class ReservationServiceTest {
     @Test
     void theHoldStartsAtThePrecisionThePlatformStoresSoThatAReplayMatchesTheFirstAnswer() {
         ReservationService withNanoseconds = new ReservationService(holds, catalog, Clock.fixed(NOW.plusNanos(123),
-                ZoneOffset.UTC));
+                ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
         withNanoseconds.createHold(input());
 
@@ -273,7 +287,7 @@ class ReservationServiceTest {
     @Test
     void theConfirmationInstantHasThePrecisionThePlatformStores() {
         ReservationService withNanoseconds = new ReservationService(holds, catalog, Clock.fixed(NOW.plusNanos(123),
-                ZoneOffset.UTC));
+                ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
         Reservation held = reservationOf(USER);
         holds.found = Optional.of(held);
 

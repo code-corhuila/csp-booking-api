@@ -39,11 +39,16 @@ public class ReservationService implements ReservationUseCases {
     private final HoldRepository holds;
     private final ShowtimeCatalog catalog;
     private final Clock clock;
+    private final int maxActiveHoldsPerUser;
 
-    public ReservationService(HoldRepository holds, ShowtimeCatalog catalog, Clock clock) {
+    public ReservationService(HoldRepository holds, ShowtimeCatalog catalog, Clock clock, int maxActiveHoldsPerUser) {
+        if (maxActiveHoldsPerUser < 1) {
+            throw new IllegalArgumentException("the limit of held reservations per user is at least 1");
+        }
         this.holds = holds;
         this.catalog = catalog;
         this.clock = clock;
+        this.maxActiveHoldsPerUser = maxActiveHoldsPerUser;
     }
 
     @Override
@@ -57,7 +62,8 @@ public class ReservationService implements ReservationUseCases {
                 input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, input.movieTitle(),
                 input.roomName(), 0);
         return holds.create(
-                new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId()));
+                new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId(),
+                maxActiveHoldsPerUser));
     }
 
     /**

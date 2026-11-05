@@ -47,6 +47,8 @@ class JdbcHoldRepositoryTest {
     private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
     private static final String KEY = "11111111-2222-3333-4444-555555555555";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** The tests that are not about the limit hold as often as they need. */
+    private static final int NO_LIMIT = 1000;
 
     private static HikariDataSource dataSource;
     private static JdbcTemplate jdbc;
@@ -161,6 +163,97 @@ class JdbcHoldRepositoryTest {
         assertEquals(0, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ?", attempt.id()));
         assertEquals(1, count("SELECT count(*) FROM booking.seat_hold_item WHERE showtime_id = ? AND seat_number = 'D1'",
                 taken.showtimeId()));
+    }
+
+    @Test
+    void aUserWithTheMaximumOfHeldReservationsIsRefusedAndNothingIsStored() {
+        UUID user = UUID.randomUUID();
+        storeLimited(user, 5);
+        Reservation sixth = hold(user, seats("M6"));
+
+        BusinessRuleViolationException refused = assertThrows(BusinessRuleViolationException.class,
+                () -> repository.create(commandWithLimit(sixth, newKey(), "hash-sixth", 5)));
+
+        assertTrue(refused.getMessage().contains("5"), refused.getMessage());
+        assertEquals(0, count("SELECT count(*) FROM booking.seat_hold WHERE id = ?", sixth.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ?", sixth.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.idempotency_key WHERE hold_id = ?", sixth.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ?", sixth.id()));
+        assertEquals(5, count("SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'", user));
+    }
+
+    @Test
+    void aReplayAtTheLimitAnswersTheOriginalReservationInsteadOfRefusingIt() {
+        UUID user = UUID.randomUUID();
+        storeLimited(user, 4);
+        Reservation fifth = hold(user, seats("N5"));
+        String key = newKey();
+        repository.create(commandWithLimit(fifth, key, "hash-fifth", 5));
+        Reservation again = hold(user, seats("N5"));
+
+        CreateHoldResult replay = repository.create(commandWithLimit(again, key, "hash-fifth", 5));
+
+        assertInstanceOf(CreateHoldResult.Replayed.class, replay);
+        assertEquals(fifth.id(), replay.reservation().id());
+        assertEquals(5, count("SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'", user));
+    }
+
+    @Test
+    void aConfirmedOrExpiredReservationNoLongerCountsAgainstTheLimit() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID user = UUID.randomUUID();
+        List<Reservation> held = storeLimited(user, 5);
+        repository.confirm(held.get(0).confirm(now), now, CORRELATION);
+        repository.releaseHeld(held.get(1).release(now), now, CORRELATION);
+
+        repository.create(commandWithLimit(hold(user, seats("Q6")), newKey(), "hash-q6", 5));
+        repository.create(commandWithLimit(hold(user, seats("Q7")), newKey(), "hash-q7", 5));
+
+        assertThrows(BusinessRuleViolationException.class,
+                () -> repository.create(commandWithLimit(hold(user, seats("Q8")), newKey(), "hash-q8", 5)));
+    }
+
+    @Test
+    void theLimitBelongsToTheUserAndNotToTheShowtimeOrToAnotherUser() {
+        UUID busy = UUID.randomUUID();
+        storeLimited(busy, 5);
+
+        CreateHoldResult other = repository.create(
+                commandWithLimit(hold(UUID.randomUUID(), seats("R1")), newKey(), "hash-r1", 5));
+
+        assertInstanceOf(CreateHoldResult.Created.class, other);
+    }
+
+    @Test
+    void concurrentHoldsOfOneUserNeverPassTheLimit() throws Exception {
+        UUID user = UUID.randomUUID();
+        int attempts = 12;
+        List<Reservation> requests = new ArrayList<>();
+        for (int i = 0; i < attempts; i++) {
+            requests.add(hold(user, seats("S" + i)));
+        }
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(attempts);
+        List<java.util.concurrent.Future<Boolean>> outcomes = new ArrayList<>();
+        for (Reservation request : requests) {
+            outcomes.add(pool.submit(() -> {
+                try {
+                    repository.create(commandWithLimit(request, newKey(), "hash-" + request.id(), 5));
+                    return true;
+                } catch (BusinessRuleViolationException refused) {
+                    return false;
+                }
+            }));
+        }
+        int created = 0;
+        for (java.util.concurrent.Future<Boolean> outcome : outcomes) {
+            if (outcome.get()) {
+                created++;
+            }
+        }
+        pool.shutdown();
+
+        assertEquals(5, created);
+        assertEquals(5, count("SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'", user));
     }
 
     @Test
@@ -515,7 +608,23 @@ class JdbcHoldRepositoryTest {
     }
 
     private static CreateHoldCommand command(Reservation reservation, String key, String requestHash) {
-        return new CreateHoldCommand(reservation, key, requestHash, CORRELATION);
+        return new CreateHoldCommand(reservation, key, requestHash, CORRELATION, NO_LIMIT);
+    }
+
+    private static CreateHoldCommand commandWithLimit(Reservation reservation, String key, String requestHash,
+            int maxActiveHolds) {
+        return new CreateHoldCommand(reservation, key, requestHash, CORRELATION, maxActiveHolds);
+    }
+
+    /** {@code count} holds of one user, each on its own showtime, stored under the limit of five. */
+    private List<Reservation> storeLimited(UUID userId, int count) {
+        List<Reservation> stored = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            Reservation reservation = hold(userId, seats("L" + i));
+            repository.create(commandWithLimit(reservation, newKey(), "hash-" + reservation.id(), 5));
+            stored.add(reservation);
+        }
+        return stored;
     }
 
     private static int count(String sql, Object... args) {
