@@ -32,6 +32,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * rejected, {@code exp} (with {@value #CLOCK_SKEW_SECONDS} s of tolerance) and {@code sub} mandatory, and the
  * user of the request is the {@code sub}. A client route also needs the permission of the
  * {@code permissions} claim that {@link ClientRoutePermissions} lists for it, or it is a 403.
+ * The access token of a user must also carry {@code iat} and live no longer than {@value #MAX_ACCESS_TOKEN_LIFETIME_SECONDS} s
+ * plus the tolerance (ADR-054): only Auth reads the list of revoked tokens, so this cap keeps the window of a stolen or revoked
+ * token at 15 minutes even if {@code APP_AUTH_JWT_EXPIRY} is raised.
  * A service credential (the token of a subject of {@code SERVICE_SUBJECTS} or {@code WORKFLOW_SUBJECTS})
  * must also carry {@code iss} {@value #SERVICE_ISSUER} and an {@code aud} that contains
  * {@value #SERVICE_AUDIENCE}, or it is a 401: a user's access token ({@code aud} {@code csp-api}) is never a
@@ -54,6 +57,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String WORKFLOW_PREFIX = "/internal/workflow/";
     /** Tolerance on {@code exp} for the clock difference between services (Norma 5.3.7). */
     static final long CLOCK_SKEW_SECONDS = 30;
+    /** The life of the access token of a user (ADR-054); a service credential lives longer and is not capped. */
+    static final long MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 900;
     private static final String PERMISSIONS_CLAIM = "permissions";
     /** Issuer and audience of every service credential (ADR-056). */
     static final String SERVICE_ISSUER = "csp-auth";
@@ -173,7 +178,25 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             logger.debug("rejected token: its sub is not the id of a user of this platform");
             return Optional.empty();
         }
+        if (!serviceCredential && !isServiceSubject(subject) && !hasAcceptableLifetime(claims, expiresAt)) {
+            return Optional.empty();
+        }
         return Optional.of(new VerifiedToken(subject, permissionsOf(claims), serviceCredential));
+    }
+
+    /** The access token of a user carries {@code iat} and is not valid for longer than ADR-054 allows, plus the tolerance. */
+    private boolean hasAcceptableLifetime(JWTClaimsSet claims, Date expiresAt) {
+        Date issuedAt = claims.getIssueTime();
+        if (issuedAt == null) {
+            logger.debug("rejected token: it has no iat claim");
+            return false;
+        }
+        long lifetimeSeconds = (expiresAt.getTime() - issuedAt.getTime()) / 1000;
+        if (lifetimeSeconds > MAX_ACCESS_TOKEN_LIFETIME_SECONDS + CLOCK_SKEW_SECONDS) {
+            logger.debug("rejected token: it lives longer than the access token of ADR-054");
+            return false;
+        }
+        return true;
     }
 
     /** {@code iss} equal to {@value #SERVICE_ISSUER} and an {@code aud} that contains {@value #SERVICE_AUDIENCE} (ADR-056). */
