@@ -101,6 +101,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void anExpiredTokenIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() - 60_000))
                 .build();
@@ -113,7 +114,8 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aTokenWithoutExpirationIsRejected() throws Exception {
-        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(SUB).build();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date()).subject(SUB).build();
 
         String token = rs256Token(servicePrivateKey, claims);
 
@@ -125,6 +127,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aTokenWithoutSubjectIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
 
@@ -138,6 +141,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aTokenWhoseSubjectIsNotAnIdOfThisPlatformIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject("client-7")
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
@@ -284,6 +288,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aTokenThatExpiredWithinTheClockSkewIsAccepted() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() - 10_000))
                 .build();
@@ -296,6 +301,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aTokenThatExpiredBeyondTheClockSkewIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() - 35_000))
                 .build();
@@ -304,6 +310,56 @@ class JwtAuthenticationFilterTest {
                         "Bearer " + rs256Token(servicePrivateKey, claims)))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void anAccessTokenOfFifteenMinutesIsAccepted() throws Exception {
+        callsHoldsWithLifetime(900).andExpect(status().isOk());
+    }
+
+    @Test
+    void anAccessTokenOfFifteenMinutesAndTheClockToleranceIsAccepted() throws Exception {
+        callsHoldsWithLifetime(930).andExpect(status().isOk());
+    }
+
+    @Test
+    void anAccessTokenThatLivesLongerThanFifteenMinutesPlusTheToleranceIsRejected() throws Exception {
+        callsHoldsWithLifetime(931).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+        callsHoldsWithLifetime(3600).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void anAccessTokenWithoutIssuedAtIsRejected() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .build();
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceCredentialKeepsItsLongLifeAndNeedsNoIssuedAt() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker")
+                .expirationTime(new Date(System.currentTimeMillis() + 90L * 24 * 3600 * 1000))
+                .build();
+
+        callsInternalWith(claims).andExpect(status().isOk());
+    }
+
+    /** A token of a user issued now that expires {@code lifetimeSeconds} later. */
+    private org.springframework.test.web.servlet.ResultActions callsHoldsWithLifetime(long lifetimeSeconds) throws Exception {
+        long now = System.currentTimeMillis();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .issueTime(new Date(now))
+                .expirationTime(new Date(now + lifetimeSeconds * 1000))
+                .build();
+        return mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                "Bearer " + rs256Token(servicePrivateKey, claims)));
     }
 
     @Test
@@ -335,6 +391,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aPermissionsClaimThatIsNotAListGrantsNothing() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .claim("permissions", "booking:create")
@@ -382,6 +439,7 @@ class JwtAuthenticationFilterTest {
 
     private String tokenWith(String... permissions) throws JOSEException {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .claim("permissions", List.of(permissions))
@@ -462,6 +520,7 @@ class JwtAuthenticationFilterTest {
 
     private static JWTClaimsSet claimsOf(String subject) {
         return new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(subject)
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
@@ -469,6 +528,7 @@ class JwtAuthenticationFilterTest {
 
     private static JWTClaimsSet validClaims() {
         return new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
