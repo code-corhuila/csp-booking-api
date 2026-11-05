@@ -29,6 +29,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -109,6 +111,27 @@ class ReservationControllerTest {
                 .andExpect(header().doesNotExist("Location"))
                 .andExpect(jsonPath("$.id").value(original.id().toString()))
                 .andExpect(jsonPath("$.status").value("HELD"));
+    }
+
+    @Test
+    void moreThanTenSeatsInOneRequestIsA400ThatNamesSeatLabels() throws Exception {
+        mockMvc.perform(hold(KEY, bodyWithSeats(11)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.details[0].field").value("seatLabels"));
+    }
+
+    @Test
+    void tenSeatsInOneRequestAreAccepted() throws Exception {
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(reservation()));
+
+        mockMvc.perform(hold(KEY, bodyWithSeats(10))).andExpect(status().isCreated());
+    }
+
+    private static String bodyWithSeats(int count) {
+        String labels = IntStream.range(0, count).mapToObj(i -> "\"S" + i + "\"").collect(Collectors.joining(","));
+        return "{\"showtimeId\":\"33333333-3333-3333-3333-333333333333\",\"seatLabels\":[" + labels
+                + "],\"movieTitle\":\"Movie\",\"roomName\":\"Room 1\"}";
     }
 
     @Test
