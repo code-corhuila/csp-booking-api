@@ -130,6 +130,8 @@ the envelope of the contract: `error`, `message`, the `details` that name the fi
 A client route also needs the permission of the `permissions` claim: `booking:create` for `POST /holds` and
 `POST /reservations/{id}/confirm`, and `booking:read:self` for `GET /reservations` and `GET /reservations/{id}`. A valid token
 without it is a `403 FORBIDDEN`. The `exp` is accepted up to 30 seconds late, for the clock difference between services (Norma 5.3.7).
+The access token of a user must carry `iat` and `exp` minus `iat` must not exceed 900 seconds plus those 30 (ADR-054): only Auth reads the list of revoked
+tokens, so this keeps the window of a stolen or revoked token at 15 minutes even if `APP_AUTH_JWT_EXPIRY` is raised. A service credential is not capped.
 A token from `dev-token.sh` carries no `permissions`, so it gets `403` on those routes until infra adds them.
 
 **Idempotency.** `POST /holds` stores its `Idempotency-Key` with the hold, so repeating the request answers `200` with
