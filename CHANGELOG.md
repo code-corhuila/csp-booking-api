@@ -20,6 +20,12 @@ reissued with those claims before this reaches a deployed environment.
 
 ### Changed
 
+- `seatLabels` of a hold takes at most 10 entries (`400 VALIDATION_ERROR` naming the field) and a user can have at most 5 `HELD` reservations, set by
+  `MAX_ACTIVE_HOLDS_PER_USER` (`422 BUSINESS_RULE_VIOLATION` beyond it; STRIDE D, DEC-008, `csp-docs#283`). The repository applies the limit in the
+  transaction of the hold, after the idempotency key and under a lock of the user, so a replay at the limit still answers its reservation.
+- `POST /holds` and `POST /internal/workflow/holds` read the layout of the showtime from Catalog and refuse with `422 BUSINESS_RULE_VIOLATION`,
+  holding nothing, a seat that is not in it (STRIDE T, `csp-docs#289`). Catalog is the authority: without `CATALOG_BASE_URL` or with
+  Catalog down the hold answers `503`, and an unknown showtime `404`. TLS towards Catalog is still pending its ADR.
 - The service credentials (the tokens of the subjects of `SERVICE_SUBJECTS` and `WORKFLOW_SUBJECTS`) must carry `iss` `csp-auth` and an `aud` that
   contains `csp-internal`: a token of a service subject without them, or with other values, answers `401` (a user's access token has `aud` `csp-api`
   and is never a service credential); a valid credential of a subject that is not allowed on the route answers `403`. A token issued before the

@@ -24,6 +24,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -92,6 +94,17 @@ class WorkflowControllerTest {
 
         mockMvc.perform(hold(KEY, BODY))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void moreThanTenSeatsInOneHoldOfTheWorkflowIsA400ThatNamesSeatLabels() throws Exception {
+        String elevenSeats = IntStream.range(0, 11).mapToObj(i -> "\"S" + i + "\"").collect(Collectors.joining(","));
+
+        mockMvc.perform(hold(KEY, BODY.replace("[\"A1\",\"A2\"]", "[" + elevenSeats + "]")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.details[0].field").value("seatLabels"));
+        verifyNoInteractions(useCases);
     }
 
     @Test

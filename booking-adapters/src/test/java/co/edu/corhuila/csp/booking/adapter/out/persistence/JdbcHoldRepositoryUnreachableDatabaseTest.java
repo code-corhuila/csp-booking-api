@@ -40,7 +40,7 @@ class JdbcHoldRepositoryUnreachableDatabaseTest {
 
             assertThrows(CannotCreateTransactionException.class, () -> repository.create(
                     new CreateHoldCommand(reservation, "11111111-2222-3333-4444-555555555555", "hash",
-                            "550e8400-e29b-41d4-a716-446655440000")));
+                            "550e8400-e29b-41d4-a716-446655440000", 5)));
         }
     }
 }
