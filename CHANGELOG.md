@@ -10,6 +10,8 @@ and is tagged `v<version>` once it is merged.
 
 ### Changed
 
+- The access token of a user is rejected with `401 INVALID_TOKEN` when it has no `iat` or when `exp` minus `iat` is longer than 900 seconds plus the 30 s tolerance
+  (ADR-054, STRIDE S, `csp-docs#284`): Booking cannot read the revoked-token list of Auth, so the cap keeps the window at 15 minutes. Service credentials are not capped.
 - `seatLabels` of a hold takes at most 10 entries (`400 VALIDATION_ERROR` naming the field) and a user can have at most 5 `HELD` reservations, set by
   `MAX_ACTIVE_HOLDS_PER_USER` (`422 BUSINESS_RULE_VIOLATION` beyond it; STRIDE D, DEC-008, `csp-docs#283`). The repository applies the limit in the
   transaction of the hold, after the idempotency key and under a lock of the user, so a replay at the limit still answers its reservation.

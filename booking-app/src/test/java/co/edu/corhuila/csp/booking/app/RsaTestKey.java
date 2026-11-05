@@ -76,6 +76,7 @@ final class RsaTestKey {
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(subject)
                     .claim("permissions", List.of("booking:create", "booking:read:self"))
+                    .issueTime(new Date())
                     .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                     .build();
             SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
