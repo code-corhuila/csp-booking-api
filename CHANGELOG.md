@@ -8,6 +8,12 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+### Added
+
+- Every call to an `/internal/` route writes one structured line (`InternalCallAuditFilter`): `sub` (as the token claims it), `route`, `status`, `authenticated`,
+  `tokenSha256` (a one-way digest, never the token) and the `traceId` of the MDC (STRIDE E, `csp-docs#285`). `ForgedWorkflowTokenAuthzTest` checks that a workflow
+  token signed with another key or with HS256 is `401 INVALID_TOKEN` and a call without token `401 UNAUTHORIZED`.
+
 ### Changed
 
 - The access token of a user is rejected with `401 INVALID_TOKEN` when it has no `iat` or when `exp` minus `iat` is longer than 900 seconds plus the 30 s tolerance

@@ -43,7 +43,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>The health routes are the only public ones, as {@code booking-service.yaml} declares.
  */
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 1)
+@Order(Ordered.HIGHEST_PRECEDENCE + 2)
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     public static final String AUTHORIZATION_HEADER = "Authorization";

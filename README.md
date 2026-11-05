@@ -148,6 +148,10 @@ client token receives `403`. A service credential must carry `iss` `csp-auth` an
 a token whose `sub` is a service subject but lacks either claim, or has another value (a user's access token has `aud` `csp-api`),
 receives `401`, and a valid credential of a subject that the route does not allow receives `403`.
 
+Every call to these routes, answered or rejected, writes one log line with `sub` (as the token claims it; on `authenticated=false` it is only a claim), `route`,
+`status`, `authenticated`, the `traceId` and `tokenSha256`, the SHA-256 digest of the token: it tells which credential made a call without being able to replay it.
+The token itself is never logged.
+
 | Route | Answer |
 |---|---|
 | `POST /internal/maintenance/expire-holds` | Expires the HELD reservations past their time (HU-BOOKING-002): `200` `{"expired", "remaining"}`, `401`/`403` |
