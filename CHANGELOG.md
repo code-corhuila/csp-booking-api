@@ -17,6 +17,11 @@ one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW
 The release also carries the Catalog client and the seat map, the permissions of the access token, the refusal of the seats that are not in the
 layout of Catalog and the `iss` and `aud` check of the service credentials (ADR-056): the credentials of `csp-worker` and `csp-workflow` must be
 reissued with those claims before this reaches a deployed environment.
+### Added
+
+- Every call to an `/internal/` route writes one structured line (`InternalCallAuditFilter`): `sub` (as the token claims it), `route`, `status`, `authenticated`,
+  `tokenSha256` (a one-way digest, never the token) and the `traceId` of the MDC (STRIDE E, `csp-docs#285`). `ForgedWorkflowTokenAuthzTest` checks that a workflow
+  token signed with another key or with HS256 is `401 INVALID_TOKEN` and a call without token `401 UNAUTHORIZED`.
 
 ### Changed
 
