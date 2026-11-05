@@ -14,6 +14,10 @@ Internal routes of the workflow service on the Booking API (ADR-035, still propo
 one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW_SUBJECTS` is empty by default, so the
 `/internal/workflow/` family stays closed until the platform sets it.
 
+The release also carries the Catalog client and the seat map, the permissions of the access token, the refusal of the seats that are not in the
+layout of Catalog and the `iss` and `aud` check of the service credentials (ADR-056): the credentials of `csp-worker` and `csp-workflow` must be
+reissued with those claims before this reaches a deployed environment.
+
 ### Changed
 
 - The service credentials (the tokens of the subjects of `SERVICE_SUBJECTS` and `WORKFLOW_SUBJECTS`) must carry `iss` `csp-auth` and an `aud` that
