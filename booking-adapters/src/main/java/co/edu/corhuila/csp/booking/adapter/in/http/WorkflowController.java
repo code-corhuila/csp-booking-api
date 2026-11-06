@@ -42,7 +42,7 @@ public class WorkflowController {
             @Valid @RequestBody WorkflowCreateHoldRequest request,
             HttpServletRequest http) {
         CreateHoldResult result = useCases.createHold(new CreateHoldInput(
-                request.userId(), request.showtimeId(), request.seatLabels(), request.movieTitle(), request.roomName(),
+                request.userId(), request.showtimeId(), request.seatLabels(),
                 request.effectiveDurationSeconds(), idempotencyKey, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
 
         Reservation reservation = result.reservation();

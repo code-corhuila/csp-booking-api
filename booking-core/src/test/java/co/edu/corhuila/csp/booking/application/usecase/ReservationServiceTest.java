@@ -55,7 +55,7 @@ class ReservationServiceTest {
     private final ReservationService service = new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
     @Test
-    void aHoldStartsAtTheClockWithTheSnapshotOfTheRequestAndNoAmount() {
+    void aHoldStartsAtTheClockWithTheSnapshotOfCatalogAndItsAmount() {
         CreateHoldResult result = service.createHold(input());
 
         assertInstanceOf(CreateHoldResult.Created.class, result);
@@ -68,7 +68,7 @@ class ReservationServiceTest {
         assertEquals(NOW.plusSeconds(600), reservation.expiresAt());
         assertEquals("Movie", reservation.movieTitleSnapshot());
         assertEquals("Room 1", reservation.roomNameSnapshot());
-        assertEquals(0, reservation.totalAmount());
+        assertEquals(24000, reservation.totalAmount());
         assertNull(reservation.confirmedAt());
 
         assertEquals(KEY, holds.stored.idempotencyKey());
@@ -91,7 +91,7 @@ class ReservationServiceTest {
 
     @Test
     void aSeatThatIsNotInTheLayoutOfCatalogIsRefusedAndNothingIsHeld() {
-        CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), "Movie", "Room 1", 600,
+        CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), 600,
                 KEY, CORRELATION);
 
         BusinessRuleViolationException refused = assertThrows(BusinessRuleViolationException.class,
@@ -152,7 +152,7 @@ class ReservationServiceTest {
 
         assertEquals(hash, hashOf(input()));
         assertEquals(hash, hashOf(withSeatsInAnotherOrder()));
-        assertNotEquals(hash, hashOf(withAnotherTitle()));
+        assertEquals(hash, hashOf(withAnotherTitle()));
         assertNotEquals(hash, hashOf(anotherUser()));
     }
 
@@ -192,7 +192,7 @@ class ReservationServiceTest {
 
     @Test
     void aDurationTheDomainForbidsNeverReachesTheRepository() {
-        CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), "Movie", "Room 1", 30, KEY,
+        CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), 30, KEY,
                 CORRELATION);
 
         assertThrows(BusinessRuleViolationException.class, () -> service.createHold(tooShort));
@@ -471,20 +471,21 @@ class ReservationServiceTest {
     }
 
     private static CreateHoldInput input() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), 600, KEY,
+                CORRELATION);
     }
 
     private static CreateHoldInput withSeatsInAnotherOrder() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A2", "A1"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A2", "A1"), 600, KEY, CORRELATION);
     }
 
     private static CreateHoldInput withAnotherTitle() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), "Another Movie", "Room 1", 600, KEY,
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), 600, KEY,
                 CORRELATION);
     }
 
     private static CreateHoldInput anotherUser() {
-        return new CreateHoldInput(OTHER, SHOWTIME, List.of("A1", "A2"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(OTHER, SHOWTIME, List.of("A1", "A2"), 600, KEY, CORRELATION);
     }
 
     private static Reservation reservationOf(UUID userId) {

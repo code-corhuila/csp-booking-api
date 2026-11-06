@@ -19,8 +19,8 @@ public record WorkflowCreateHoldRequest(
         @NotNull UUID userId,
         @NotNull UUID showtimeId,
         @NotEmpty @Size(max = 10) @UniqueElements List<@NotBlank @Size(max = 10) String> seatLabels,
-        @NotBlank @Size(max = 255) String movieTitle,
-        @NotBlank @Size(max = 255) String roomName,
+        @Size(max = 255) String movieTitle,
+        @Size(max = 255) String roomName,
         @Min(60) @Max(900) Integer holdDurationSeconds) {
 
     /** The seconds this hold lasts: the value of the body, or the default of the contract. */
