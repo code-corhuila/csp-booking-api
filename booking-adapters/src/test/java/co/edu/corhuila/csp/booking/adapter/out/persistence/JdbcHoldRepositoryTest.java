@@ -116,6 +116,14 @@ class JdbcHoldRepositoryTest {
         List<String> publishedSeats = new ArrayList<>();
         event.path("payload").path("seatNumbers").forEach(seat -> publishedSeats.add(seat.asText()));
         assertEquals(List.of("A1", "A2"), publishedSeats);
+        // expiresAt is additive (HU-TICKETING-005): the reservation expiry as an ISO-8601 UTC instant, nothing else changed.
+        assertEquals(reservation.expiresAt().toString(), event.path("payload").path("expiresAt").asText());
+        assertEquals(1, event.path("version").asInt());
+        List<String> payloadFields = new ArrayList<>();
+        event.path("payload").fieldNames().forEachRemaining(payloadFields::add);
+        assertEquals(java.util.Set.of("reservationId", "userId", "showtimeId", "seatNumbers", "expiresAt"),
+                new java.util.HashSet<>(payloadFields));
+        assertEquals(reservation.showtimeId().toString(), event.path("payload").path("showtimeId").asText());
     }
 
     @Test

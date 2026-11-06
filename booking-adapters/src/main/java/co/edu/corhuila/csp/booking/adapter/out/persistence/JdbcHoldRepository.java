@@ -371,6 +371,7 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
         payload.put("userId", reservation.userId().toString());
         payload.put("showtimeId", reservation.showtimeId().toString());
         payload.put("seatNumbers", reservation.seatLabels());
+        payload.put("expiresAt", reservation.expiresAt().toString());
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("correlationId", command.correlationId());
