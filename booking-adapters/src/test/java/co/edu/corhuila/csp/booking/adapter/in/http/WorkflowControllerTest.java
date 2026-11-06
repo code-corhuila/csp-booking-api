@@ -225,6 +225,6 @@ class WorkflowControllerTest {
 
     private static Reservation reservation() {
         return Reservation.hold(UUID.randomUUID(), UUID.fromString(OWNER), SHOWTIME, List.of("A1", "A2"),
-                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", null, 0);
     }
 }

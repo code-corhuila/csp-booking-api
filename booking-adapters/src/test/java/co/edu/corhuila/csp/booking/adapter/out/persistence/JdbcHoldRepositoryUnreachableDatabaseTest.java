@@ -36,7 +36,7 @@ class JdbcHoldRepositoryUnreachableDatabaseTest {
             JdbcHoldRepository repository = new JdbcHoldRepository(new JdbcTemplate(dataSource),
                     new DataSourceTransactionManager(dataSource), new ObjectMapper());
             Reservation reservation = Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    List.of("A1"), Duration.ofSeconds(600), Instant.now(), "Movie", "Room 1", 0);
+                    List.of("A1"), Duration.ofSeconds(600), Instant.now(), "Movie", "Room 1", null, 0);
 
             assertThrows(CannotCreateTransactionException.class, () -> repository.create(
                     new CreateHoldCommand(reservation, "11111111-2222-3333-4444-555555555555", "hash",

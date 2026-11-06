@@ -68,6 +68,7 @@ class ReservationServiceTest {
         assertEquals(NOW.plusSeconds(600), reservation.expiresAt());
         assertEquals("Movie", reservation.movieTitleSnapshot());
         assertEquals("Room 1", reservation.roomNameSnapshot());
+        assertEquals(LAYOUT.startsAt(), reservation.showtimeStartsAt());
         assertEquals(24000, reservation.totalAmount());
         assertNull(reservation.confirmedAt());
 
@@ -202,7 +203,7 @@ class ReservationServiceTest {
     @Test
     void theExpirationSweepQueriesOverdueHoldsAndExpiresThemWithTheCorrelationId() {
         Reservation overdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(overdue);
 
         var result = service.expireHolds(100, CORRELATION);
@@ -222,7 +223,7 @@ class ReservationServiceTest {
     @Test
     void aHoldThatIsNotOverdueIsRefusedByTheDomainAndNeverReachesTheEngine() {
         Reservation notYetOverdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(notYetOverdue);
 
         assertThrows(InvalidStatusTransitionException.class, () -> service.expireHolds(100, CORRELATION));
@@ -233,9 +234,9 @@ class ReservationServiceTest {
     @Test
     void theExpirationSweepReportsRemainingOverdueForTheNextRun() {
         Reservation overdue1 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         Reservation overdue2 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(overdue1, overdue2);
 
         var result = service.expireHolds(1, CORRELATION);
@@ -247,9 +248,9 @@ class ReservationServiceTest {
     @Test
     void aHoldThatAConfirmationWonDoesNotAbortTheRestOfTheBatch() {
         Reservation lost = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         Reservation next = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(lost, next);
         holds.raceLostId = lost.id();
 
@@ -317,7 +318,7 @@ class ReservationServiceTest {
     @Test
     void aHoldPastItsExpirationCannotBeConfirmedEvenIfTheSweepDidNotRunYet() {
         holds.found = Optional.of(Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0));
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0));
 
         assertThrows(InvalidStatusTransitionException.class,
                 () -> service.confirmReservation(USER, UUID.randomUUID(), CORRELATION));
@@ -490,7 +491,7 @@ class ReservationServiceTest {
 
     private static Reservation reservationOf(UUID userId) {
         return Reservation.hold(UUID.randomUUID(), userId, SHOWTIME, List.of("A1"), Duration.ofSeconds(600), NOW,
-                "Movie", "Room 1", 0);
+                "Movie", "Room 1", null, 0);
     }
 
     private static final class FakeHolds implements HoldRepository {

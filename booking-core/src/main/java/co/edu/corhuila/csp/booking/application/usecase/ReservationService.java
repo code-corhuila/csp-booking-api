@@ -56,13 +56,13 @@ public class ReservationService implements ReservationUseCases {
     public CreateHoldResult createHold(CreateHoldInput input) {
         ShowtimeLayout showtime = catalog.layoutOf(input.showtimeId(), input.correlationId());
         requireSeatsInLayout(input, showtime);
-        // The title, the room and the price are Catalog's, copied once and never refreshed (ADR-020); whatever the
-        // request says about them is ignored. The platform stores microseconds, so the hold starts at one: a replay
+        // The title, the room, the start time and the price are Catalog's, copied once and never refreshed (ADR-020);
+        // whatever the request says about them is ignored. The platform stores microseconds, so the hold starts at one: a replay
         // must answer the exact instant the first answer did.
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         Reservation reservation = Reservation.hold(UUID.randomUUID(), input.userId(), input.showtimeId(),
                 input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, showtime.movieTitle(),
-                showtime.roomName(), showtime.price() * input.seatLabels().size());
+                showtime.roomName(), showtime.startsAt(), showtime.price() * input.seatLabels().size());
         return holds.create(
                 new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId(),
                 maxActiveHoldsPerUser));
