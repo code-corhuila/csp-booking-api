@@ -25,6 +25,8 @@ reissued with those claims before this reaches a deployed environment.
 
 ### Added
 
+- `ReservationHeld` (`cine.booking.reservation-held.v1`) carries `payload.expiresAt`, the expiry of the reservation as an ISO-8601 UTC instant (HU-TICKETING-005 scenario 2, `csp-docs#218`, `csp-booking-api#88`): `JdbcHoldRepository` writes it from `Reservation.expiresAt()` so Ticketing can warn the customer before the hold lapses. The field is additive: `reservationId`, `userId`, `showtimeId`, `seatNumbers` and the envelope (`version` stays 1) do not change, and no schema or endpoint changes.
+
 - The call to Catalog is made over TLS and trusts only the internal CA of the environment (ADR-067 section 3, criteria 1 to 3, `csp-docs#289` criterion 2): `HttpShowtimeCatalog` builds its `SSLContext` from the PEM file `CATALOG_TLS_CA_FILE` (`TrustedCa`), never trusts the authorities of the JDK for this call and keeps hostname verification on. Booking refuses to start when `CATALOG_BASE_URL` is set and is not an `https://` URL, or when it is set without `CATALOG_TLS_CA_FILE`; with `CATALOG_BASE_URL` unset it starts and the routes that need Catalog still answer `503`. `deploy/compose.yml` mounts the CA read-only at `/run/tls/ca.crt` from `CATALOG_TLS_CA_HOST_FILE`, and `.env.example` and the README state the `https://catalog-api:8082/api/v1/catalog` URL. Deployment note: the constructor of `HttpShowtimeCatalog` takes the `SSLContext`; no endpoint, schema or event changes.
 
 - Every call to an `/internal/` route writes one structured line (`InternalCallAuditFilter`): `sub` (as the token claims it), `route`, `status`, `authenticated`,
