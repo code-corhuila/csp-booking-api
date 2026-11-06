@@ -19,6 +19,8 @@ layout of Catalog and the `iss` and `aud` check of the service credentials (ADR-
 reissued with those claims before this reaches a deployed environment.
 ### Fixed
 
+- The hold keeps the start time of the showtime (HU-BOOKING-001, ADR-020 section 1, rest of TD-040): `Reservation.showtimeStartsAt` is copied from the availability answer of Catalog when the hold is created, written to `seat_hold.showtime_starts_at` (the column already existed), conserved by every transition and published as `showtimeStartsAt` in `BookingConfirmed` (`events.md`), which was always `null`. It is `null` only for a hold written before this change. The HTTP `Reservation` of `booking-service.yaml` does not declare it, so the response is unchanged.
+
 - The hold takes the title, the room and the amount from Catalog (HU-BOOKING-001, ADR-020 section 1, TD-040, found by the end-to-end test of `csp-workflow`): `POST /holds` and `POST /internal/workflow/holds` copy `movieTitle` and `roomName` from the availability answer of Catalog and charge `totalAmount` as its `price` times the number of seats, instead of trusting the request. `movieTitle` and `roomName` in the body are optional and ignored, as `booking-service.yaml` says, so the workflow, which does not know them, no longer gets `400 VALIDATION_ERROR` and its saga `book-seats` no longer ends `COMPENSATED` at `hold-seats`; they no longer take part in the request hash, so a replay with another title is a replay. `CreateHoldInput` loses both fields. `showtimeStartsAt` is still null (rest of TD-040).
 
 ### Added
