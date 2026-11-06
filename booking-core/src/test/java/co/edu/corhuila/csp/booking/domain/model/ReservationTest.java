@@ -18,7 +18,19 @@ class ReservationTest {
     private static final UUID USER = UUID.fromString("11111111-1111-4111-8111-111111111111");
 
     private static Reservation held(List<String> seats, Duration duration) {
-        return Reservation.hold(UUID.randomUUID(), USER, UUID.randomUUID(), seats, duration, NOW, "Movie", "Room 1", 2500);
+        return Reservation.hold(UUID.randomUUID(), USER, UUID.randomUUID(), seats, duration, NOW, "Movie", "Room 1", null, 2500);
+    }
+
+    @Test
+    void theStartOfTheShowtimeSurvivesEveryTransition() {
+        Instant starts = Instant.parse("2026-11-01T20:00:00Z");
+        Reservation held = Reservation.hold(UUID.randomUUID(), USER, UUID.randomUUID(), List.of("A1"),
+                Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", starts, 2500);
+
+        assertEquals(starts, held.showtimeStartsAt());
+        assertEquals(starts, held.confirm(NOW.plusSeconds(1)).showtimeStartsAt());
+        assertEquals(starts, held.release(NOW.plusSeconds(1)).showtimeStartsAt());
+        assertEquals(starts, held.expire(NOW.plus(Reservation.DEFAULT_HOLD)).showtimeStartsAt());
     }
 
     @Test
@@ -49,15 +61,15 @@ class ReservationTest {
     @Test
     void theAmountCannotBeNegative() {
         assertThrows(InvalidReservationException.class, () -> Reservation.hold(UUID.randomUUID(), USER,
-                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", -1));
+                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", null, -1));
     }
 
     @Test
     void aReservationWithoutItsIdentifiersIsMalformedNotARuleViolation() {
         assertThrows(InvalidReservationException.class, () -> Reservation.hold(null, USER,
-                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", 0));
+                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, "Movie", "Room 1", null, 0));
         assertThrows(InvalidReservationException.class, () -> Reservation.hold(UUID.randomUUID(), USER,
-                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, " ", "Room 1", 0));
+                UUID.randomUUID(), List.of("A1"), Reservation.DEFAULT_HOLD, NOW, " ", "Room 1", null, 0));
     }
 
     @Test
