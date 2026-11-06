@@ -17,6 +17,10 @@ one of `2.0.0` (`csp-booking-db` `v2.0.0`): nothing has to be applied. `WORKFLOW
 The release also carries the Catalog client and the seat map, the permissions of the access token, the refusal of the seats that are not in the
 layout of Catalog and the `iss` and `aud` check of the service credentials (ADR-056): the credentials of `csp-worker` and `csp-workflow` must be
 reissued with those claims before this reaches a deployed environment.
+### Fixed
+
+- The hold takes the title, the room and the amount from Catalog (HU-BOOKING-001, ADR-020 section 1, TD-040, found by the end-to-end test of `csp-workflow`): `POST /holds` and `POST /internal/workflow/holds` copy `movieTitle` and `roomName` from the availability answer of Catalog and charge `totalAmount` as its `price` times the number of seats, instead of trusting the request. `movieTitle` and `roomName` in the body are optional and ignored, as `booking-service.yaml` says, so the workflow, which does not know them, no longer gets `400 VALIDATION_ERROR` and its saga `book-seats` no longer ends `COMPENSATED` at `hold-seats`; they no longer take part in the request hash, so a replay with another title is a replay. `CreateHoldInput` loses both fields. `showtimeStartsAt` is still null (rest of TD-040).
+
 ### Added
 
 - Every call to an `/internal/` route writes one structured line (`InternalCallAuditFilter`): `sub` (as the token claims it), `route`, `status`, `authenticated`,
