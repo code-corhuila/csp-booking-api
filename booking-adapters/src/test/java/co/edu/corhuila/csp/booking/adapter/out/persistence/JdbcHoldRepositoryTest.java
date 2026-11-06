@@ -47,6 +47,7 @@ class JdbcHoldRepositoryTest {
     private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
     private static final String KEY = "11111111-2222-3333-4444-555555555555";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Instant STARTS_AT = Instant.parse("2026-11-01T20:00:00Z");
     /** The tests that are not about the limit hold as often as they need. */
     private static final int NO_LIMIT = 1000;
 
@@ -481,7 +482,7 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
-    void theConfirmedEventCarriesTheSnapshotTheCorrelationIdAndNoStartTime() throws Exception {
+    void theConfirmedEventCarriesTheSnapshotTheCorrelationIdAndTheStartTime() throws Exception {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation held = store(hold(seats("R1", "R2"), "Another Movie", "Room 9"));
 
@@ -502,6 +503,20 @@ class JdbcHoldRepositoryTest {
         assertEquals("Another Movie", event.path("payload").path("movieTitle").asText());
         assertEquals("Room 9", event.path("payload").path("roomName").asText());
         assertEquals("R1", event.path("payload").path("seatNumbers").get(0).asText());
+        assertEquals(STARTS_AT.toString(), event.path("payload").path("showtimeStartsAt").asText());
+    }
+
+    @Test
+    void aHoldWithoutAStartTimeIsStoredAndPublishedWithNull() throws Exception {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation legacy = store(Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                seats("S1"), Duration.ofSeconds(600), now, "Movie", "Room 1", null, 0));
+
+        assertEquals(legacy, repository.findById(legacy.id()).orElseThrow());
+        repository.confirm(legacy.confirm(now), now, CORRELATION);
+        JsonNode event = MAPPER.readTree(scalar("""
+                SELECT payload::text FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", legacy.id()));
         assertTrue(event.path("payload").path("showtimeStartsAt").isNull());
     }
 
@@ -511,7 +526,7 @@ class JdbcHoldRepositoryTest {
         Reservation overdue = store(overdueHold(UUID.randomUUID(), seats("S1"), now.minusSeconds(700)));
         Reservation forced = new Reservation(overdue.id(), overdue.userId(), overdue.showtimeId(), overdue.seatLabels(),
                 ReservationStatus.CONFIRMED, overdue.expiresAt(), overdue.movieTitleSnapshot(),
-                overdue.roomNameSnapshot(), overdue.totalAmount(), overdue.createdAt(), now);
+                overdue.roomNameSnapshot(), overdue.showtimeStartsAt(), overdue.totalAmount(), overdue.createdAt(), now);
 
         assertThrows(InvalidStatusTransitionException.class,
                 () -> repository.confirm(forced, now, CORRELATION));
@@ -569,7 +584,7 @@ class JdbcHoldRepositoryTest {
     /** A hold created far enough in the past that its window closed before {@code now}. */
     private Reservation overdueHold(UUID showtimeId, List<String> seats, Instant createdAt) {
         Reservation reservation = Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), showtimeId, seats,
-                Duration.ofSeconds(600), createdAt, "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), createdAt, "Movie", "Room 1", null, 0);
         writtenHolds.add(reservation.id());
         return reservation;
     }
@@ -594,7 +609,7 @@ class JdbcHoldRepositoryTest {
         // PostgreSQL keeps microseconds: an instant with nanoseconds would not round-trip.
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation reservation = Reservation.hold(UUID.randomUUID(), userId, showtimeId, seats,
-                Duration.ofSeconds(600), now, movieTitle, roomName, 0);
+                Duration.ofSeconds(600), now, movieTitle, roomName, STARTS_AT, 0);
         writtenHolds.add(reservation.id());
         return reservation;
     }
