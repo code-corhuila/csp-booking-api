@@ -16,6 +16,8 @@ and is tagged `v<version>` once it is merged.
 
 ### Added
 
+- The call to Catalog is made over TLS and trusts only the internal CA of the environment (ADR-067 section 3, criteria 1 to 3, `csp-docs#289` criterion 2): `HttpShowtimeCatalog` builds its `SSLContext` from the PEM file `CATALOG_TLS_CA_FILE` (`TrustedCa`), never trusts the authorities of the JDK for this call and keeps hostname verification on. Booking refuses to start when `CATALOG_BASE_URL` is set and is not an `https://` URL, or when it is set without `CATALOG_TLS_CA_FILE`; with `CATALOG_BASE_URL` unset it starts and the routes that need Catalog still answer `503`. `deploy/compose.yml` mounts the CA read-only at `/run/tls/ca.crt` from `CATALOG_TLS_CA_HOST_FILE`, and `.env.example` and the README state the `https://catalog-api:8082/api/v1/catalog` URL. Deployment note: the constructor of `HttpShowtimeCatalog` takes the `SSLContext`; no endpoint, schema or event changes.
+
 - Every call to an `/internal/` route writes one structured line (`InternalCallAuditFilter`): `sub` (as the token claims it), `route`, `status`, `authenticated`,
   `tokenSha256` (a one-way digest, never the token) and the `traceId` of the MDC (STRIDE E, `csp-docs#285`). `ForgedWorkflowTokenAuthzTest` checks that a workflow
   token signed with another key or with HS256 is `401 INVALID_TOKEN` and a call without token `401 UNAUTHORIZED`.
