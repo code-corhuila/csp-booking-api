@@ -59,6 +59,14 @@ class WorkflowControllerTest {
     }
 
     @Test
+    void aHoldWithoutTheTitleAndTheRoomIsAccepted() throws Exception {
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(reservation()));
+
+        mockMvc.perform(hold(KEY, BODY.replace(",\"movieTitle\":\"Movie\",\"roomName\":\"Room 1\"", "")))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
     void aHoldForTheUserOfTheBodyAnswers201WithTheLocation() throws Exception {
         Reservation created = reservation();
         when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(created));
@@ -217,6 +225,6 @@ class WorkflowControllerTest {
 
     private static Reservation reservation() {
         return Reservation.hold(UUID.randomUUID(), UUID.fromString(OWNER), SHOWTIME, List.of("A1", "A2"),
-                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", null, 0);
     }
 }

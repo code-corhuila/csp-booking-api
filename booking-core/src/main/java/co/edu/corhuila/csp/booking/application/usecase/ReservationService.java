@@ -11,6 +11,7 @@ import co.edu.corhuila.csp.booking.application.port.out.LayoutSeat;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
 import co.edu.corhuila.csp.booking.application.port.out.ShowtimeCatalog;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeLayout;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
@@ -53,14 +54,15 @@ public class ReservationService implements ReservationUseCases {
 
     @Override
     public CreateHoldResult createHold(CreateHoldInput input) {
-        requireSeatsInLayout(input);
-        // The title and the room are still the values of the request and the start time of the showtime stays null
-        // (TD-040). The platform stores microseconds, so the hold starts at one: a replay must answer the exact
-        // instant the first answer did.
+        ShowtimeLayout showtime = catalog.layoutOf(input.showtimeId(), input.correlationId());
+        requireSeatsInLayout(input, showtime);
+        // The title, the room, the start time and the price are Catalog's, copied once and never refreshed (ADR-020);
+        // whatever the request says about them is ignored. The platform stores microseconds, so the hold starts at one: a replay
+        // must answer the exact instant the first answer did.
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         Reservation reservation = Reservation.hold(UUID.randomUUID(), input.userId(), input.showtimeId(),
-                input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, input.movieTitle(),
-                input.roomName(), 0);
+                input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, showtime.movieTitle(),
+                showtime.roomName(), showtime.startsAt(), showtime.price() * input.seatLabels().size());
         return holds.create(
                 new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId(),
                 maxActiveHoldsPerUser));
@@ -70,8 +72,8 @@ public class ReservationService implements ReservationUseCases {
      * A seat that Catalog does not list for the showtime is never held (STRIDE T, csp-docs#289). Catalog is the
      * authority of the layout, so when it cannot answer the hold fails instead of trusting the request.
      */
-    private void requireSeatsInLayout(CreateHoldInput input) {
-        Set<String> layout = catalog.layoutOf(input.showtimeId(), input.correlationId()).seats().stream()
+    private static void requireSeatsInLayout(CreateHoldInput input, ShowtimeLayout showtime) {
+        Set<String> layout = showtime.seats().stream()
                 .map(LayoutSeat::label)
                 .collect(Collectors.toSet());
         List<String> unknown = input.seatLabels().stream().filter(label -> !layout.contains(label)).toList();
@@ -171,7 +173,7 @@ public class ReservationService implements ReservationUseCases {
 
     /**
      * The hash that tells a replay from a conflicting payload (Norma 5.3.8): the same request
-     * hashes the same however the seats were ordered, and the user is part of it so a key of one
+     * hashes the same however the seats were ordered (the title and the room, which are ignored, are not part of it), and the user is part of it so a key of one
      * client can never be answered with the reservation of another.
      */
     private static String requestHash(CreateHoldInput input) {
@@ -179,8 +181,6 @@ public class ReservationService implements ReservationUseCases {
                 input.userId().toString(),
                 input.showtimeId().toString(),
                 input.seatLabels().stream().sorted().collect(Collectors.joining(",")),
-                String.valueOf(input.movieTitle()),
-                String.valueOf(input.roomName()),
                 Integer.toString(input.holdDurationSeconds()));
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

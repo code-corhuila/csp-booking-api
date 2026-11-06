@@ -55,7 +55,7 @@ class ReservationServiceTest {
     private final ReservationService service = new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
     @Test
-    void aHoldStartsAtTheClockWithTheSnapshotOfTheRequestAndNoAmount() {
+    void aHoldStartsAtTheClockWithTheSnapshotOfCatalogAndItsAmount() {
         CreateHoldResult result = service.createHold(input());
 
         assertInstanceOf(CreateHoldResult.Created.class, result);
@@ -68,7 +68,8 @@ class ReservationServiceTest {
         assertEquals(NOW.plusSeconds(600), reservation.expiresAt());
         assertEquals("Movie", reservation.movieTitleSnapshot());
         assertEquals("Room 1", reservation.roomNameSnapshot());
-        assertEquals(0, reservation.totalAmount());
+        assertEquals(LAYOUT.startsAt(), reservation.showtimeStartsAt());
+        assertEquals(24000, reservation.totalAmount());
         assertNull(reservation.confirmedAt());
 
         assertEquals(KEY, holds.stored.idempotencyKey());
@@ -91,7 +92,7 @@ class ReservationServiceTest {
 
     @Test
     void aSeatThatIsNotInTheLayoutOfCatalogIsRefusedAndNothingIsHeld() {
-        CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), "Movie", "Room 1", 600,
+        CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), 600,
                 KEY, CORRELATION);
 
         BusinessRuleViolationException refused = assertThrows(BusinessRuleViolationException.class,
@@ -152,7 +153,7 @@ class ReservationServiceTest {
 
         assertEquals(hash, hashOf(input()));
         assertEquals(hash, hashOf(withSeatsInAnotherOrder()));
-        assertNotEquals(hash, hashOf(withAnotherTitle()));
+        assertEquals(hash, hashOf(withAnotherTitle()));
         assertNotEquals(hash, hashOf(anotherUser()));
     }
 
@@ -192,7 +193,7 @@ class ReservationServiceTest {
 
     @Test
     void aDurationTheDomainForbidsNeverReachesTheRepository() {
-        CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), "Movie", "Room 1", 30, KEY,
+        CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), 30, KEY,
                 CORRELATION);
 
         assertThrows(BusinessRuleViolationException.class, () -> service.createHold(tooShort));
@@ -202,7 +203,7 @@ class ReservationServiceTest {
     @Test
     void theExpirationSweepQueriesOverdueHoldsAndExpiresThemWithTheCorrelationId() {
         Reservation overdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(overdue);
 
         var result = service.expireHolds(100, CORRELATION);
@@ -222,7 +223,7 @@ class ReservationServiceTest {
     @Test
     void aHoldThatIsNotOverdueIsRefusedByTheDomainAndNeverReachesTheEngine() {
         Reservation notYetOverdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(notYetOverdue);
 
         assertThrows(InvalidStatusTransitionException.class, () -> service.expireHolds(100, CORRELATION));
@@ -233,9 +234,9 @@ class ReservationServiceTest {
     @Test
     void theExpirationSweepReportsRemainingOverdueForTheNextRun() {
         Reservation overdue1 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         Reservation overdue2 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(overdue1, overdue2);
 
         var result = service.expireHolds(1, CORRELATION);
@@ -247,9 +248,9 @@ class ReservationServiceTest {
     @Test
     void aHoldThatAConfirmationWonDoesNotAbortTheRestOfTheBatch() {
         Reservation lost = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         Reservation next = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(lost, next);
         holds.raceLostId = lost.id();
 
@@ -317,7 +318,7 @@ class ReservationServiceTest {
     @Test
     void aHoldPastItsExpirationCannotBeConfirmedEvenIfTheSweepDidNotRunYet() {
         holds.found = Optional.of(Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0));
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0));
 
         assertThrows(InvalidStatusTransitionException.class,
                 () -> service.confirmReservation(USER, UUID.randomUUID(), CORRELATION));
@@ -471,25 +472,26 @@ class ReservationServiceTest {
     }
 
     private static CreateHoldInput input() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), 600, KEY,
+                CORRELATION);
     }
 
     private static CreateHoldInput withSeatsInAnotherOrder() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A2", "A1"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A2", "A1"), 600, KEY, CORRELATION);
     }
 
     private static CreateHoldInput withAnotherTitle() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), "Another Movie", "Room 1", 600, KEY,
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), 600, KEY,
                 CORRELATION);
     }
 
     private static CreateHoldInput anotherUser() {
-        return new CreateHoldInput(OTHER, SHOWTIME, List.of("A1", "A2"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(OTHER, SHOWTIME, List.of("A1", "A2"), 600, KEY, CORRELATION);
     }
 
     private static Reservation reservationOf(UUID userId) {
         return Reservation.hold(UUID.randomUUID(), userId, SHOWTIME, List.of("A1"), Duration.ofSeconds(600), NOW,
-                "Movie", "Room 1", 0);
+                "Movie", "Room 1", null, 0);
     }
 
     private static final class FakeHolds implements HoldRepository {

@@ -128,6 +128,14 @@ class ReservationControllerTest {
         mockMvc.perform(hold(KEY, bodyWithSeats(10))).andExpect(status().isCreated());
     }
 
+    @Test
+    void aHoldWithoutTheTitleAndTheRoomIsAccepted() throws Exception {
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(reservation()));
+
+        mockMvc.perform(hold(KEY, "{\"showtimeId\":\"33333333-3333-3333-3333-333333333333\",\"seatLabels\":[\"A1\"]}"))
+                .andExpect(status().isCreated());
+    }
+
     private static String bodyWithSeats(int count) {
         String labels = IntStream.range(0, count).mapToObj(i -> "\"S" + i + "\"").collect(Collectors.joining(","));
         return "{\"showtimeId\":\"33333333-3333-3333-3333-333333333333\",\"seatLabels\":[" + labels
@@ -387,6 +395,6 @@ class ReservationControllerTest {
 
     private static Reservation reservation() {
         return Reservation.hold(UUID.randomUUID(), UUID.fromString(SUB), SHOWTIME, List.of("A1", "A2"),
-                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", null, 0);
     }
 }

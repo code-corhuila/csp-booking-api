@@ -54,7 +54,7 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
             INSERT INTO booking.seat_hold
                 (id, user_id, showtime_id, status, movie_title_snapshot, room_name_snapshot,
                  showtime_starts_at, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String INSERT_IDEMPOTENCY_KEY = """
@@ -105,7 +105,7 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
             SELECT r.id AS id, r.user_id AS user_id, r.showtime_id AS showtime_id, r.status AS status,
                    r.total_amount AS total_amount, r.created_at AS created_at, r.confirmed_at AS confirmed_at,
                    h.movie_title_snapshot AS movie_title_snapshot, h.room_name_snapshot AS room_name_snapshot,
-                   h.expires_at AS expires_at,
+                   h.showtime_starts_at AS showtime_starts_at, h.expires_at AS expires_at,
                    array_agg(s.seat_number ORDER BY s.seat_number) AS seat_labels
             FROM booking.reservation r
             JOIN booking.seat_hold h ON h.id = r.hold_id
@@ -312,7 +312,7 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
     private void insertSeatHold(Reservation reservation) {
         jdbc.update(INSERT_SEAT_HOLD, reservation.id(), reservation.userId(), reservation.showtimeId(),
                 reservation.status().name(), reservation.movieTitleSnapshot(), reservation.roomNameSnapshot(),
-                at(reservation.expiresAt()), at(reservation.createdAt()));
+                at(reservation.showtimeStartsAt()), at(reservation.expiresAt()), at(reservation.createdAt()));
     }
 
     /** @return false when the key was already used: this call created nothing worth keeping. */
@@ -419,6 +419,7 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
                 instant(rs, "expires_at"),
                 rs.getString("movie_title_snapshot"),
                 rs.getString("room_name_snapshot"),
+                instant(rs, "showtime_starts_at"),
                 rs.getLong("total_amount"),
                 instant(rs, "created_at"),
                 instant(rs, "confirmed_at"));
@@ -483,8 +484,8 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
 
     /**
      * Writes the {@code BookingConfirmed} outbox event in the transaction of the confirmation
-     * (Norma 5.3.11). {@code showtimeStartsAt} is null while the service runs without a Catalog
-     * snapshot (Cut 2, events.md of this service).
+     * (Norma 5.3.11). {@code showtimeStartsAt} is the start time of the Catalog snapshot; it is null
+     * only for a hold written before the snapshot carried it (events.md of this service).
      */
     private void insertConfirmedOutboxEvent(Reservation confirmed, Instant now, String correlationId) {
         UUID eventId = UUID.randomUUID();
@@ -495,7 +496,8 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
         payload.put("movieTitle", confirmed.movieTitleSnapshot());
         payload.put("roomName", confirmed.roomNameSnapshot());
         payload.put("seatNumbers", confirmed.seatLabels());
-        payload.put("showtimeStartsAt", null);
+        Instant startsAt = confirmed.showtimeStartsAt();
+        payload.put("showtimeStartsAt", startsAt == null ? null : startsAt.toString());
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("correlationId", correlationId);
