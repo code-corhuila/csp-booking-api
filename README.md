@@ -60,8 +60,9 @@ reads is listed in `.env.example`; copy it to `.env` for local values and never 
 | `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the maintenance operations under `/internal/maintenance/` (ADR-020) |
 | `WORKFLOW_SUBJECTS` | empty | The `sub` of the service tokens allowed on `/internal/workflow/` (ADR-035). Empty keeps that family closed; a subject of one list gets `403` on the other |
 | `MAX_ACTIVE_HOLDS_PER_USER` | `5` | The most `HELD` reservations one user may have; a hold beyond it answers `422 BUSINESS_RULE_VIOLATION` and `seatLabels` takes at most 10 entries (DEC-008) |
-| `CATALOG_BASE_URL` | none | The base of the Catalog API inside the platform network, for example `http://catalog:8082/api/v1/catalog` (ADR-020). Without it the routes that read Catalog answer `503` |
+| `CATALOG_BASE_URL` | none | The base of the Catalog API inside the platform network, for example `https://catalog-api:8082/api/v1/catalog` (ADR-020). It must be an `https://` URL: Booking refuses to start with any other. Without it the routes that read Catalog answer `503` |
 | `CATALOG_SERVICE_TOKEN_FILE` | none, **required** with `CATALOG_BASE_URL` | The file with the service credential (`sub` `booking-service`) the secret manager rotates; it is re-read at most every 30 seconds |
+| `CATALOG_TLS_CA_FILE` | none, **required** with `CATALOG_BASE_URL` (`/run/tls/ca.crt` in the container) | The public certificate (PEM) of the internal CA of the environment. It is the only authority Booking trusts when it calls Catalog, and the name of Catalog (`catalog-api`) is verified (ADR-067). Compose mounts it read-only from the host variable `CATALOG_TLS_CA_HOST_FILE` |
 | `PORT` | `8083` | The listening port |
 
 ### Run it
