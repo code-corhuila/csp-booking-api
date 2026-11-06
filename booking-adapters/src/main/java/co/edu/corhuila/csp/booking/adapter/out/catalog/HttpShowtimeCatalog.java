@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
+import javax.net.ssl.SSLContext;
 
 /**
  * Reads {@code GET /showtimes/{showtimeId}/availability} of Catalog with the service credential, directly inside the
@@ -25,6 +26,9 @@ import java.util.function.Supplier;
  * a showtime that is not available, a timeout, a connection error or a {@code 5xx} is an unavailable Catalog, and a
  * {@code 401} or {@code 403} is a configuration fault. There is no retry inside the request and no fallback: an answer
  * without {@code seatLayout} is not turned into a layout with invented rows.
+ * <p>The call is made over TLS and trusts only the {@code SSLContext} it receives, built from the internal CA
+ * ({@link TrustedCa}); the name of the server is verified because the client never turns endpoint identification off
+ * (ADR-067).
  */
 public class HttpShowtimeCatalog implements ShowtimeCatalog {
 
@@ -34,13 +38,13 @@ public class HttpShowtimeCatalog implements ShowtimeCatalog {
     private final ObjectMapper mapper;
     private final HttpClient http;
 
-    public HttpShowtimeCatalog(String baseUrl, Supplier<String> serviceToken, Duration connectTimeout,
-            Duration readTimeout, ObjectMapper mapper) {
+    public HttpShowtimeCatalog(String baseUrl, Supplier<String> serviceToken, SSLContext trust,
+            Duration connectTimeout, Duration readTimeout, ObjectMapper mapper) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.serviceToken = serviceToken;
         this.readTimeout = readTimeout;
         this.mapper = mapper;
-        this.http = HttpClient.newBuilder().connectTimeout(connectTimeout).build();
+        this.http = HttpClient.newBuilder().sslContext(trust).connectTimeout(connectTimeout).build();
     }
 
     @Override
