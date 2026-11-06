@@ -48,7 +48,7 @@ public class ReservationController {
             AuthenticatedCaller caller,
             HttpServletRequest http) {
         CreateHoldResult result = useCases.createHold(new CreateHoldInput(
-                caller.userId(), request.showtimeId(), request.seatLabels(), request.movieTitle(), request.roomName(),
+                caller.userId(), request.showtimeId(), request.seatLabels(),
                 request.effectiveDurationSeconds(), idempotencyKey, MDC.get(CorrelationIdFilter.TRACE_ID_MDC_KEY)));
 
         Reservation reservation = result.reservation();
