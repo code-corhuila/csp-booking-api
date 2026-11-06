@@ -8,6 +8,10 @@ and is tagged `v<version>` once it is merged.
 
 ## [Unreleased]
 
+### Fixed
+
+- The hold takes the title, the room and the amount from Catalog (HU-BOOKING-001, ADR-020 section 1, TD-040, found by the end-to-end test of `csp-workflow`): `POST /holds` and `POST /internal/workflow/holds` copy `movieTitle` and `roomName` from the availability answer of Catalog and charge `totalAmount` as its `price` times the number of seats, instead of trusting the request. `movieTitle` and `roomName` in the body are optional and ignored, as `booking-service.yaml` says, so the workflow, which does not know them, no longer gets `400 VALIDATION_ERROR` and its saga `book-seats` no longer ends `COMPENSATED` at `hold-seats`; they no longer take part in the request hash, so a replay with another title is a replay. `CreateHoldInput` loses both fields. `showtimeStartsAt` is still null (rest of TD-040).
+
 ### Added
 
 - Every call to an `/internal/` route writes one structured line (`InternalCallAuditFilter`): `sub` (as the token claims it), `route`, `status`, `authenticated`,

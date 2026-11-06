@@ -59,6 +59,14 @@ class WorkflowControllerTest {
     }
 
     @Test
+    void aHoldWithoutTheTitleAndTheRoomIsAccepted() throws Exception {
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(reservation()));
+
+        mockMvc.perform(hold(KEY, BODY.replace(",\"movieTitle\":\"Movie\",\"roomName\":\"Room 1\"", "")))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
     void aHoldForTheUserOfTheBodyAnswers201WithTheLocation() throws Exception {
         Reservation created = reservation();
         when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(created));

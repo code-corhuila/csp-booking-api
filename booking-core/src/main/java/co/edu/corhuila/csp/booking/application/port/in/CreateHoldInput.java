@@ -5,12 +5,12 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * One hold request as the transport delivers it: the identity comes from the token, the seats and
- * the snapshots from the body of the contract, and the key and the correlation id from the headers
- * (Norma 5.3.8).
+ * One hold request as the transport delivers it: the identity comes from the token, the showtime and the seats
+ * from the body of the contract, and the key and the correlation id from the headers (Norma 5.3.8). The title,
+ * the room and the price are not part of it: Catalog supplies them (ADR-020).
  */
-public record CreateHoldInput(UUID userId, UUID showtimeId, List<String> seatLabels, String movieTitle,
-        String roomName, int holdDurationSeconds, String idempotencyKey, String correlationId) {
+public record CreateHoldInput(UUID userId, UUID showtimeId, List<String> seatLabels,
+        int holdDurationSeconds, String idempotencyKey, String correlationId) {
 
     public CreateHoldInput {
         Objects.requireNonNull(userId, "the user of the token is required");
