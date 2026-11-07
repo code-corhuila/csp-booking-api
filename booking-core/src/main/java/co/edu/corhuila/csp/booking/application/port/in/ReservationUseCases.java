@@ -62,6 +62,9 @@ public interface ReservationUseCases {
     /** The page of the reservations of the caller, in the window and filters of the request. */
     ReservationPage listReservations(UUID callerId, ReservationQuery query);
 
+    /** The page of all reservations for an administrator, in the window and filters of the request. */
+    ReservationPage listAllReservations(ReservationQuery query);
+
     /**
      * Expires HELD reservations past their hold time (HU-BOOKING-002). Called by csp-worker through
      * the internal maintenance endpoint, never by a client.

@@ -161,7 +161,18 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
     @Override
     public ReservationPage findByUser(UUID userId, ReservationQuery query) {
         List<Object> arguments = new ArrayList<>();
-        String where = whereFor(userId, query, arguments);
+        String where = whereForUser(userId, query, arguments);
+        return findPage(query, arguments, where);
+    }
+
+    @Override
+    public ReservationPage findAll(ReservationQuery query) {
+        List<Object> arguments = new ArrayList<>();
+        String where = whereForAll(query, arguments);
+        return findPage(query, arguments, where);
+    }
+
+    private ReservationPage findPage(ReservationQuery query, List<Object> arguments, String where) {
         long total = jdbc.queryForObject("SELECT count(*) FROM booking.reservation r " + where, Long.class,
                 arguments.toArray());
         arguments.add(query.limit());
@@ -260,9 +271,20 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
      * Only literal fragments are appended to the WHERE: every value is bound as a parameter, so no
      * filter can ever become part of the statement.
      */
-    private static String whereFor(UUID userId, ReservationQuery query, List<Object> arguments) {
+    private static String whereForUser(UUID userId, ReservationQuery query, List<Object> arguments) {
         StringBuilder where = new StringBuilder("WHERE r.user_id = ?");
         arguments.add(userId);
+        appendFilters(where, query, arguments);
+        return where.toString();
+    }
+
+    private static String whereForAll(ReservationQuery query, List<Object> arguments) {
+        StringBuilder where = new StringBuilder("WHERE 1 = 1");
+        appendFilters(where, query, arguments);
+        return where.toString();
+    }
+
+    private static void appendFilters(StringBuilder where, ReservationQuery query, List<Object> arguments) {
         if (query.status() != null) {
             where.append(" AND r.status = ?");
             arguments.add(query.status().name());
@@ -271,7 +293,6 @@ public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
             where.append(" AND r.created_at < ?");
             arguments.add(at(query.createdBefore()));
         }
-        return where.toString();
     }
 
     private Optional<Reservation> first(String sql, Object... arguments) {

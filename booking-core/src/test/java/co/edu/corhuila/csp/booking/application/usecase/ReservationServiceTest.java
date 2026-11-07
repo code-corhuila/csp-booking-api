@@ -192,6 +192,16 @@ class ReservationServiceTest {
     }
 
     @Test
+    void theAdministratorPageIsAskedWithoutAUserFilter() {
+        ReservationQuery query = new ReservationQuery(2, 10, ReservationStatus.HELD, NOW);
+        ReservationPage page = new ReservationPage(List.of(reservationOf(USER)), 1);
+        holds.page = page;
+
+        assertSame(page, service.listAllReservations(query));
+        assertEquals(query, holds.askedAllWith);
+    }
+
+    @Test
     void aDurationTheDomainForbidsNeverReachesTheRepository() {
         CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), 30, KEY,
                 CORRELATION);
@@ -502,6 +512,7 @@ class ReservationServiceTest {
         private UUID askedById;
         private UUID askedForUser;
         private ReservationQuery askedWith;
+        private ReservationQuery askedAllWith;
         private List<Reservation> overdue = List.of();
         private List<Reservation> expired;
         private String expiredCorrelation;
@@ -552,6 +563,12 @@ class ReservationServiceTest {
         public ReservationPage findByUser(UUID userId, ReservationQuery query) {
             askedForUser = userId;
             askedWith = query;
+            return page;
+        }
+
+        @Override
+        public ReservationPage findAll(ReservationQuery query) {
+            askedAllWith = query;
             return page;
         }
 
