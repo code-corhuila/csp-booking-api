@@ -108,6 +108,7 @@ The routes are served under `/api/v1/booking`, the base `booking-service.yaml` o
 | `POST /reservations/{reservationId}/confirm` | Confirms a `HELD` reservation of the caller: `200` with the reservation, `422 INVALID_STATUS_TRANSITION` when it is expired or already confirmed, `403` for another user's, `404` when it does not exist |
 | `GET /reservations/{reservationId}` | One reservation of the caller (`403` for another user's, `404` when it does not exist) |
 | `GET /reservations` | Page of the caller, newest first: `page`, `limit`, `status`, `createdBefore` |
+| `GET /admin/reservations` | Page of every user's reservations for administrators, with the same filters and order |
 | `GET /showtimes/{showtimeId}/seats` | The seat map of a showtime for any role: the layout of Catalog with `AVAILABLE`, `HELD` or `CONFIRMED` per seat, never cached; `404` when Catalog has no such showtime, `503` when it cannot answer (ADR-046) |
 
 ```bash
@@ -129,8 +130,9 @@ the envelope of the contract: `error`, `message`, the `details` that name the fi
 `traceId`.
 
 A client route also needs the permission of the `permissions` claim: `booking:create` for `POST /holds` and
-`POST /reservations/{id}/confirm`, and `booking:read:self` for `GET /reservations` and `GET /reservations/{id}`. A valid token
-without it is a `403 FORBIDDEN`. The `exp` is accepted up to 30 seconds late, for the clock difference between services (Norma 5.3.7).
+`POST /reservations/{id}/confirm`, `booking:read:self` for `GET /reservations` and `GET /reservations/{id}`, and
+`booking:read:all` for `GET /admin/reservations`. A valid token without it is a `403 FORBIDDEN`. The `exp` is accepted
+up to 30 seconds late, for the clock difference between services (Norma 5.3.7).
 The access token of a user must carry `iat` and `exp` minus `iat` must not exceed 900 seconds plus those 30 (ADR-054): only Auth reads the list of revoked
 tokens, so this keeps the window of a stolen or revoked token at 15 minutes even if `APP_AUTH_JWT_EXPIRY` is raised. A service credential is not capped.
 A token from `dev-token.sh` carries no `permissions`, so it gets `403` on those routes until infra adds them.
