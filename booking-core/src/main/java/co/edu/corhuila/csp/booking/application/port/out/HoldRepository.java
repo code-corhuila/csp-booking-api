@@ -38,6 +38,12 @@ public interface HoldRepository {
     ReservationPage findByUser(UUID userId, ReservationQuery query);
 
     /**
+     * All reservations, from the newest createdAt to the oldest with the id as tiebreaker,
+     * in the window the administrator contract asks for.
+     */
+    ReservationPage findAll(ReservationQuery query);
+
+    /**
      * Makes the confirmation durable: the reservation, its hold and every seat become CONFIRMED and
      * the {@code BookingConfirmed} outbox event is written, all in one transaction (Norma 5.3.11).
      * A confirmed seat stays inside {@code uk_seat_hold_item_active_seat}, so it can never be held again.
@@ -53,6 +59,20 @@ public interface HoldRepository {
      *         reservation was no longer a HELD reservation inside its hold time
      */
     void confirm(Reservation confirmed, Instant now, String correlationId);
+
+    /**
+     * Releases a HELD hold on demand, whatever its deadline (ADR-035): the same three updates and the
+     * same {@code ReservationExpired} outbox event as {@link #expire}, in one transaction, without
+     * the requirement that the hold be overdue.
+     *
+     * @param released the reservation already transitioned by the domain to EXPIRED
+     * @param now the instant the release was decided on
+     * @param correlationId the correlation id of the request, written to the event metadata
+     * @throws co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException when the
+     *         reservation was no longer HELD, so a second release or a confirmation that won the
+     *         race changes nothing and writes no event
+     */
+    void releaseHeld(Reservation released, Instant now, String correlationId);
 
     /**
      * HELD reservations past their expiration time, oldest expiration first, up to {@code limit}.

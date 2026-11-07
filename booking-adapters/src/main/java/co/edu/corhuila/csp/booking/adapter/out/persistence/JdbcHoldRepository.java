@@ -7,10 +7,12 @@ import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
 import co.edu.corhuila.csp.booking.application.port.out.IdempotencyKeyConflictException;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.SeatOccupancy;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
+import co.edu.corhuila.csp.booking.domain.model.SeatStatus;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Array;
@@ -40,7 +42,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * concurrent clients cannot double-book or double-charge a retry.
  */
 @Repository
-public class JdbcHoldRepository implements HoldRepository {
+public class JdbcHoldRepository implements HoldRepository, SeatOccupancy {
 
     private static final String AGGREGATE_TYPE = "Reservation";
     private static final String EVENT_TYPE = "ReservationHeld";
@@ -52,7 +54,7 @@ public class JdbcHoldRepository implements HoldRepository {
             INSERT INTO booking.seat_hold
                 (id, user_id, showtime_id, status, movie_title_snapshot, room_name_snapshot,
                  showtime_starts_at, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
     private static final String INSERT_IDEMPOTENCY_KEY = """
@@ -83,6 +85,14 @@ public class JdbcHoldRepository implements HoldRepository {
             VALUES (?, ?, ?, ?, ?::jsonb, ?)
             """;
 
+    /** Serializes the holds of one user for the length of the transaction, so the count below cannot be passed twice. */
+    private static final String LOCK_USER_HOLDS = "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))";
+
+    /** The {@code HELD} reservations of a user: an overdue one counts until the sweep releases it, like its seats. */
+    private static final String COUNT_HELD_OF_USER = """
+            SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'
+            """;
+
     private static final String FIND_STORED_KEY = """
             SELECT hold_id, request_hash FROM booking.idempotency_key WHERE "key" = ?
             """;
@@ -95,7 +105,7 @@ public class JdbcHoldRepository implements HoldRepository {
             SELECT r.id AS id, r.user_id AS user_id, r.showtime_id AS showtime_id, r.status AS status,
                    r.total_amount AS total_amount, r.created_at AS created_at, r.confirmed_at AS confirmed_at,
                    h.movie_title_snapshot AS movie_title_snapshot, h.room_name_snapshot AS room_name_snapshot,
-                   h.expires_at AS expires_at,
+                   h.showtime_starts_at AS showtime_starts_at, h.expires_at AS expires_at,
                    array_agg(s.seat_number ORDER BY s.seat_number) AS seat_labels
             FROM booking.reservation r
             JOIN booking.seat_hold h ON h.id = r.hold_id
@@ -134,10 +144,35 @@ public class JdbcHoldRepository implements HoldRepository {
         return first(RESERVATION_SELECT + "WHERE r.id = ?" + GROUP_BY_RESERVATION, reservationId);
     }
 
+    /**
+     * The seats {@code uk_seat_hold_item_active_seat} covers: the ones a second hold would be refused. An overdue hold
+     * stays {@code HELD} until the sweep releases it, exactly as for the hold itself (ADR-046).
+     */
+    @Override
+    public Map<String, SeatStatus> takenSeats(UUID showtimeId) {
+        Map<String, SeatStatus> taken = new LinkedHashMap<>();
+        jdbc.query("SELECT seat_number, status FROM booking.seat_hold_item WHERE showtime_id = ? "
+                + "AND status IN ('HELD', 'CONFIRMED')", rs -> {
+                    taken.put(rs.getString("seat_number"), SeatStatus.valueOf(rs.getString("status")));
+                }, showtimeId);
+        return taken;
+    }
+
     @Override
     public ReservationPage findByUser(UUID userId, ReservationQuery query) {
         List<Object> arguments = new ArrayList<>();
-        String where = whereFor(userId, query, arguments);
+        String where = whereForUser(userId, query, arguments);
+        return findPage(query, arguments, where);
+    }
+
+    @Override
+    public ReservationPage findAll(ReservationQuery query) {
+        List<Object> arguments = new ArrayList<>();
+        String where = whereForAll(query, arguments);
+        return findPage(query, arguments, where);
+    }
+
+    private ReservationPage findPage(ReservationQuery query, List<Object> arguments, String where) {
         long total = jdbc.queryForObject("SELECT count(*) FROM booking.reservation r " + where, Long.class,
                 arguments.toArray());
         arguments.add(query.limit());
@@ -159,7 +194,13 @@ public class JdbcHoldRepository implements HoldRepository {
     @Override
     public void expire(Reservation expired, Instant now, String correlationId) {
         String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
-        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation));
+        transactionTemplate.executeWithoutResult(status -> release(expired, now, correlation, true));
+    }
+
+    @Override
+    public void releaseHeld(Reservation released, Instant now, String correlationId) {
+        String correlation = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        transactionTemplate.executeWithoutResult(status -> release(released, now, correlation, false));
     }
 
     @Override
@@ -200,17 +241,22 @@ public class JdbcHoldRepository implements HoldRepository {
      * whose status is HELD or CONFIRMED, so a seat only becomes available for a new hold when its
      * row leaves that set. Every statement carries a {@code status = 'HELD'} guard, so a
      * confirmation that won the race is never overwritten and a sweep that runs twice is a no-op.
+     * The sweep also requires the hold to be overdue; a release on demand (ADR-035) does not.
      */
-    private void release(Reservation expired, Instant now, String correlationId) {
+    private void release(Reservation expired, Instant now, String correlationId, boolean mustBeOverdue) {
         int expiredReservations = jdbc.update("""
                 UPDATE booking.reservation r SET status = 'EXPIRED'
                 WHERE r.id = ?
                   AND r.status = 'HELD'
                   AND EXISTS (SELECT 1 FROM booking.seat_hold h
                               WHERE h.id = r.hold_id
-                                AND h.expires_at <= ?)""",
-                expired.id(), at(now));
+                                AND (? = FALSE OR h.expires_at <= ?))""",
+                expired.id(), mustBeOverdue, at(now));
         if (expiredReservations == 0) {
+            if (!mustBeOverdue) {
+                throw new InvalidStatusTransitionException(
+                        "the reservation " + expired.id() + " is no longer a HELD reservation");
+            }
             throw new HoldNoLongerOverdueException(
                     "the reservation " + expired.id() + " is no longer an overdue HELD reservation");
         }
@@ -225,9 +271,20 @@ public class JdbcHoldRepository implements HoldRepository {
      * Only literal fragments are appended to the WHERE: every value is bound as a parameter, so no
      * filter can ever become part of the statement.
      */
-    private static String whereFor(UUID userId, ReservationQuery query, List<Object> arguments) {
+    private static String whereForUser(UUID userId, ReservationQuery query, List<Object> arguments) {
         StringBuilder where = new StringBuilder("WHERE r.user_id = ?");
         arguments.add(userId);
+        appendFilters(where, query, arguments);
+        return where.toString();
+    }
+
+    private static String whereForAll(ReservationQuery query, List<Object> arguments) {
+        StringBuilder where = new StringBuilder("WHERE 1 = 1");
+        appendFilters(where, query, arguments);
+        return where.toString();
+    }
+
+    private static void appendFilters(StringBuilder where, ReservationQuery query, List<Object> arguments) {
         if (query.status() != null) {
             where.append(" AND r.status = ?");
             arguments.add(query.status().name());
@@ -236,11 +293,25 @@ public class JdbcHoldRepository implements HoldRepository {
             where.append(" AND r.created_at < ?");
             arguments.add(at(query.createdBefore()));
         }
-        return where.toString();
     }
 
     private Optional<Reservation> first(String sql, Object... arguments) {
         return jdbc.query(sql, this::toReservation, arguments).stream().findFirst();
+    }
+
+    /**
+     * The limit of held reservations per user (DEC-008, STRIDE D). It runs after the idempotency key is stored, so the
+     * replay of a request that already made its hold is answered before it and never refused, and under a lock of
+     * the user, so two concurrent holds of one user cannot both pass the count.
+     */
+    private void requireRoomForAnotherHold(CreateHoldCommand command) {
+        String user = command.reservation().userId().toString();
+        jdbc.queryForObject(LOCK_USER_HOLDS, Object.class, user);
+        long held = jdbc.queryForObject(COUNT_HELD_OF_USER, Long.class, command.reservation().userId());
+        if (held >= command.maxActiveHolds()) {
+            throw new BusinessRuleViolationException(
+                    "The user already has the maximum of " + command.maxActiveHolds() + " held reservations");
+        }
     }
 
     private CreateHoldResult insert(CreateHoldCommand command, TransactionStatus status) {
@@ -251,6 +322,7 @@ public class JdbcHoldRepository implements HoldRepository {
             status.setRollbackOnly();
             return originalOf(command);
         }
+        requireRoomForAnotherHold(command);
         insertHoldItems(reservation);
         insertReservation(reservation);
         insertReservationSeats(reservation);
@@ -261,7 +333,7 @@ public class JdbcHoldRepository implements HoldRepository {
     private void insertSeatHold(Reservation reservation) {
         jdbc.update(INSERT_SEAT_HOLD, reservation.id(), reservation.userId(), reservation.showtimeId(),
                 reservation.status().name(), reservation.movieTitleSnapshot(), reservation.roomNameSnapshot(),
-                at(reservation.expiresAt()), at(reservation.createdAt()));
+                at(reservation.showtimeStartsAt()), at(reservation.expiresAt()), at(reservation.createdAt()));
     }
 
     /** @return false when the key was already used: this call created nothing worth keeping. */
@@ -320,6 +392,7 @@ public class JdbcHoldRepository implements HoldRepository {
         payload.put("userId", reservation.userId().toString());
         payload.put("showtimeId", reservation.showtimeId().toString());
         payload.put("seatNumbers", reservation.seatLabels());
+        payload.put("expiresAt", reservation.expiresAt().toString());
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("correlationId", command.correlationId());
@@ -368,6 +441,7 @@ public class JdbcHoldRepository implements HoldRepository {
                 instant(rs, "expires_at"),
                 rs.getString("movie_title_snapshot"),
                 rs.getString("room_name_snapshot"),
+                instant(rs, "showtime_starts_at"),
                 rs.getLong("total_amount"),
                 instant(rs, "created_at"),
                 instant(rs, "confirmed_at"));
@@ -432,8 +506,8 @@ public class JdbcHoldRepository implements HoldRepository {
 
     /**
      * Writes the {@code BookingConfirmed} outbox event in the transaction of the confirmation
-     * (Norma 5.3.11). {@code showtimeStartsAt} is null while the service runs without a Catalog
-     * snapshot (Cut 2, events.md of this service).
+     * (Norma 5.3.11). {@code showtimeStartsAt} is the start time of the Catalog snapshot; it is null
+     * only for a hold written before the snapshot carried it (events.md of this service).
      */
     private void insertConfirmedOutboxEvent(Reservation confirmed, Instant now, String correlationId) {
         UUID eventId = UUID.randomUUID();
@@ -444,7 +518,8 @@ public class JdbcHoldRepository implements HoldRepository {
         payload.put("movieTitle", confirmed.movieTitleSnapshot());
         payload.put("roomName", confirmed.roomNameSnapshot());
         payload.put("seatNumbers", confirmed.seatLabels());
-        payload.put("showtimeStartsAt", null);
+        Instant startsAt = confirmed.showtimeStartsAt();
+        payload.put("showtimeStartsAt", startsAt == null ? null : startsAt.toString());
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("correlationId", correlationId);

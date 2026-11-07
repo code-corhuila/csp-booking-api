@@ -1,9 +1,14 @@
 package co.edu.corhuila.csp.booking.app;
 
 import co.edu.corhuila.csp.booking.application.port.in.ReservationUseCases;
+import co.edu.corhuila.csp.booking.application.port.in.SeatMapUseCases;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
+import co.edu.corhuila.csp.booking.application.port.out.SeatOccupancy;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeCatalog;
 import co.edu.corhuila.csp.booking.application.usecase.ReservationService;
+import co.edu.corhuila.csp.booking.application.usecase.SeatMapService;
 import java.time.Clock;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -20,7 +25,13 @@ public class UseCaseConfiguration {
     }
 
     @Bean
-    ReservationUseCases reservationUseCases(HoldRepository holds, Clock clock) {
-        return new ReservationService(holds, clock);
+    ReservationUseCases reservationUseCases(HoldRepository holds, ShowtimeCatalog catalog, Clock clock,
+            @Value("${max-active-holds-per-user:5}") int maxActiveHoldsPerUser) {
+        return new ReservationService(holds, catalog, clock, maxActiveHoldsPerUser);
+    }
+
+    @Bean
+    SeatMapUseCases seatMapUseCases(ShowtimeCatalog catalog, SeatOccupancy occupancy) {
+        return new SeatMapService(catalog, occupancy);
     }
 }

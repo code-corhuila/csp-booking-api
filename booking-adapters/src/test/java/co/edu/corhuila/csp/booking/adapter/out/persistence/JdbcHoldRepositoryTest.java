@@ -14,6 +14,7 @@ import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
+import co.edu.corhuila.csp.booking.domain.model.SeatStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariConfig;
@@ -46,6 +47,9 @@ class JdbcHoldRepositoryTest {
     private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
     private static final String KEY = "11111111-2222-3333-4444-555555555555";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Instant STARTS_AT = Instant.parse("2026-11-01T20:00:00Z");
+    /** The tests that are not about the limit hold as often as they need. */
+    private static final int NO_LIMIT = 1000;
 
     private static HikariDataSource dataSource;
     private static JdbcTemplate jdbc;
@@ -112,6 +116,14 @@ class JdbcHoldRepositoryTest {
         List<String> publishedSeats = new ArrayList<>();
         event.path("payload").path("seatNumbers").forEach(seat -> publishedSeats.add(seat.asText()));
         assertEquals(List.of("A1", "A2"), publishedSeats);
+        // expiresAt is additive (HU-TICKETING-005): the reservation expiry as an ISO-8601 UTC instant, nothing else changed.
+        assertEquals(reservation.expiresAt().toString(), event.path("payload").path("expiresAt").asText());
+        assertEquals(1, event.path("version").asInt());
+        List<String> payloadFields = new ArrayList<>();
+        event.path("payload").fieldNames().forEachRemaining(payloadFields::add);
+        assertEquals(java.util.Set.of("reservationId", "userId", "showtimeId", "seatNumbers", "expiresAt"),
+                new java.util.HashSet<>(payloadFields));
+        assertEquals(reservation.showtimeId().toString(), event.path("payload").path("showtimeId").asText());
     }
 
     @Test
@@ -163,6 +175,97 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
+    void aUserWithTheMaximumOfHeldReservationsIsRefusedAndNothingIsStored() {
+        UUID user = UUID.randomUUID();
+        storeLimited(user, 5);
+        Reservation sixth = hold(user, seats("M6"));
+
+        BusinessRuleViolationException refused = assertThrows(BusinessRuleViolationException.class,
+                () -> repository.create(commandWithLimit(sixth, newKey(), "hash-sixth", 5)));
+
+        assertTrue(refused.getMessage().contains("5"), refused.getMessage());
+        assertEquals(0, count("SELECT count(*) FROM booking.seat_hold WHERE id = ?", sixth.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ?", sixth.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.idempotency_key WHERE hold_id = ?", sixth.id()));
+        assertEquals(0, count("SELECT count(*) FROM booking.outbox_event WHERE aggregate_id = ?", sixth.id()));
+        assertEquals(5, count("SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'", user));
+    }
+
+    @Test
+    void aReplayAtTheLimitAnswersTheOriginalReservationInsteadOfRefusingIt() {
+        UUID user = UUID.randomUUID();
+        storeLimited(user, 4);
+        Reservation fifth = hold(user, seats("N5"));
+        String key = newKey();
+        repository.create(commandWithLimit(fifth, key, "hash-fifth", 5));
+        Reservation again = hold(user, seats("N5"));
+
+        CreateHoldResult replay = repository.create(commandWithLimit(again, key, "hash-fifth", 5));
+
+        assertInstanceOf(CreateHoldResult.Replayed.class, replay);
+        assertEquals(fifth.id(), replay.reservation().id());
+        assertEquals(5, count("SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'", user));
+    }
+
+    @Test
+    void aConfirmedOrExpiredReservationNoLongerCountsAgainstTheLimit() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID user = UUID.randomUUID();
+        List<Reservation> held = storeLimited(user, 5);
+        repository.confirm(held.get(0).confirm(now), now, CORRELATION);
+        repository.releaseHeld(held.get(1).release(now), now, CORRELATION);
+
+        repository.create(commandWithLimit(hold(user, seats("Q6")), newKey(), "hash-q6", 5));
+        repository.create(commandWithLimit(hold(user, seats("Q7")), newKey(), "hash-q7", 5));
+
+        assertThrows(BusinessRuleViolationException.class,
+                () -> repository.create(commandWithLimit(hold(user, seats("Q8")), newKey(), "hash-q8", 5)));
+    }
+
+    @Test
+    void theLimitBelongsToTheUserAndNotToTheShowtimeOrToAnotherUser() {
+        UUID busy = UUID.randomUUID();
+        storeLimited(busy, 5);
+
+        CreateHoldResult other = repository.create(
+                commandWithLimit(hold(UUID.randomUUID(), seats("R1")), newKey(), "hash-r1", 5));
+
+        assertInstanceOf(CreateHoldResult.Created.class, other);
+    }
+
+    @Test
+    void concurrentHoldsOfOneUserNeverPassTheLimit() throws Exception {
+        UUID user = UUID.randomUUID();
+        int attempts = 12;
+        List<Reservation> requests = new ArrayList<>();
+        for (int i = 0; i < attempts; i++) {
+            requests.add(hold(user, seats("S" + i)));
+        }
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(attempts);
+        List<java.util.concurrent.Future<Boolean>> outcomes = new ArrayList<>();
+        for (Reservation request : requests) {
+            outcomes.add(pool.submit(() -> {
+                try {
+                    repository.create(commandWithLimit(request, newKey(), "hash-" + request.id(), 5));
+                    return true;
+                } catch (BusinessRuleViolationException refused) {
+                    return false;
+                }
+            }));
+        }
+        int created = 0;
+        for (java.util.concurrent.Future<Boolean> outcome : outcomes) {
+            if (outcome.get()) {
+                created++;
+            }
+        }
+        pool.shutdown();
+
+        assertEquals(5, created);
+        assertEquals(5, count("SELECT count(*) FROM booking.reservation WHERE user_id = ? AND status = 'HELD'", user));
+    }
+
+    @Test
     void findByIdAnswersWithTheReservationOfAnyOwnerOrWithNothing() {
         Reservation reservation = hold(seats("E1"));
         assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(reservation, newKey(), "hash-e")));
@@ -208,6 +311,22 @@ class JdbcHoldRepositoryTest {
         assertEquals(1,
                 repository.findByUser(user, new ReservationQuery(1, 10, null, held.createdAt().plusSeconds(1)))
                         .total());
+    }
+
+    @Test
+    void findAllIncludesEveryUserAndSupportsTheSameFiltersAndPagination() {
+        UUID user = UUID.randomUUID();
+        Reservation first = hold(user, seats("G2"));
+        Reservation second = hold(UUID.randomUUID(), seats("G3"));
+        assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(first, newKey(), "hash-all-1")));
+        assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(second, newKey(), "hash-all-2")));
+
+        ReservationPage page = repository.findAll(new ReservationQuery(1, 1, ReservationStatus.HELD,
+                second.createdAt().plusSeconds(1)));
+
+        assertEquals(2, page.total());
+        assertEquals(1, page.items().size());
+        assertEquals(second.id(), page.items().get(0).id());
     }
 
     @Test
@@ -316,6 +435,51 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
+    void releaseHeldFreesTheSeatsOfAHoldThatIsNotOverdueAndWritesOneExpiredEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation fresh = store(hold(UUID.randomUUID(), showtime, seats("U1", "U2"), "Movie", "Room 1"));
+
+        repository.releaseHeld(fresh.release(now), now, CORRELATION);
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'EXPIRED'",
+                fresh.id()));
+        assertEquals(1, count("SELECT count(*) FROM booking.seat_hold WHERE id = ? AND status = 'EXPIRED'",
+                fresh.id()));
+        assertEquals(2, count("SELECT count(*) FROM booking.seat_hold_item WHERE hold_id = ? AND status = 'RELEASED'",
+                fresh.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", fresh.id()));
+        // The seats are available again: another client can hold them right away.
+        Reservation again = store(hold(UUID.randomUUID(), showtime, seats("U1", "U2"), "Movie", "Room 1"));
+        assertEquals(ReservationStatus.HELD, repository.findById(again.id()).orElseThrow().status());
+    }
+
+    @Test
+    void releaseHeldIsRefusedForAConfirmedOrAnAlreadyReleasedReservationAndWritesNoEvent() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation confirmed = store(hold(seats("V1")));
+        repository.confirm(confirmed.confirm(now), now, CORRELATION);
+        Reservation released = store(hold(seats("V2")));
+        repository.releaseHeld(released.release(now), now, CORRELATION);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.releaseHeld(confirmed.release(now), now, CORRELATION));
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> repository.releaseHeld(released.release(now), now, CORRELATION));
+
+        assertEquals(1, count("SELECT count(*) FROM booking.reservation WHERE id = ? AND status = 'CONFIRMED'",
+                confirmed.id()));
+        assertEquals(0, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", confirmed.id()));
+        assertEquals(1, count("""
+                SELECT count(*) FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'ReservationExpired'""", released.id()));
+    }
+
+    @Test
     void confirmMovesTheReservationTheHoldAndEverySeatInOneTransaction() {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation held = store(hold(seats("P1", "P2")));
@@ -342,7 +506,7 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
-    void theConfirmedEventCarriesTheSnapshotTheCorrelationIdAndNoStartTime() throws Exception {
+    void theConfirmedEventCarriesTheSnapshotTheCorrelationIdAndTheStartTime() throws Exception {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation held = store(hold(seats("R1", "R2"), "Another Movie", "Room 9"));
 
@@ -363,6 +527,20 @@ class JdbcHoldRepositoryTest {
         assertEquals("Another Movie", event.path("payload").path("movieTitle").asText());
         assertEquals("Room 9", event.path("payload").path("roomName").asText());
         assertEquals("R1", event.path("payload").path("seatNumbers").get(0).asText());
+        assertEquals(STARTS_AT.toString(), event.path("payload").path("showtimeStartsAt").asText());
+    }
+
+    @Test
+    void aHoldWithoutAStartTimeIsStoredAndPublishedWithNull() throws Exception {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Reservation legacy = store(Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                seats("S1"), Duration.ofSeconds(600), now, "Movie", "Room 1", null, 0));
+
+        assertEquals(legacy, repository.findById(legacy.id()).orElseThrow());
+        repository.confirm(legacy.confirm(now), now, CORRELATION);
+        JsonNode event = MAPPER.readTree(scalar("""
+                SELECT payload::text FROM booking.outbox_event
+                WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", legacy.id()));
         assertTrue(event.path("payload").path("showtimeStartsAt").isNull());
     }
 
@@ -372,7 +550,7 @@ class JdbcHoldRepositoryTest {
         Reservation overdue = store(overdueHold(UUID.randomUUID(), seats("S1"), now.minusSeconds(700)));
         Reservation forced = new Reservation(overdue.id(), overdue.userId(), overdue.showtimeId(), overdue.seatLabels(),
                 ReservationStatus.CONFIRMED, overdue.expiresAt(), overdue.movieTitleSnapshot(),
-                overdue.roomNameSnapshot(), overdue.totalAmount(), overdue.createdAt(), now);
+                overdue.roomNameSnapshot(), overdue.showtimeStartsAt(), overdue.totalAmount(), overdue.createdAt(), now);
 
         assertThrows(InvalidStatusTransitionException.class,
                 () -> repository.confirm(forced, now, CORRELATION));
@@ -398,6 +576,29 @@ class JdbcHoldRepositoryTest {
                 WHERE aggregate_id = ? AND event_type = 'BookingConfirmed'""", held.id()));
     }
 
+    @Test
+    void takenSeatsShowsTheHeldAndTheConfirmedSeatsOfThatShowtimeOnlyAndTheSweepFreesThem() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        UUID showtime = UUID.randomUUID();
+        Reservation held = store(hold(UUID.randomUUID(), showtime, seats("L1"), "Movie", "Room 1"));
+        Reservation toConfirm = store(hold(UUID.randomUUID(), showtime, seats("L2"), "Movie", "Room 1"));
+        repository.confirm(toConfirm.confirm(now), now, CORRELATION);
+        Reservation overdue = store(overdueHold(showtime, seats("L3"), now.minusSeconds(700)));
+        store(hold(UUID.randomUUID(), UUID.randomUUID(), seats("L1"), "Movie", "Room 1"));
+
+        // An overdue hold stays HELD until the sweep, the same fact that makes a second hold of L3 fail.
+        assertEquals(java.util.Map.of("L1", SeatStatus.HELD, "L2", SeatStatus.CONFIRMED, "L3", SeatStatus.HELD),
+                repository.takenSeats(showtime));
+        assertThrows(BusinessRuleViolationException.class,
+                () -> store(hold(UUID.randomUUID(), showtime, seats("L3"), "Movie", "Room 1")));
+
+        repository.expire(overdue.expire(now), now, CORRELATION);
+
+        assertEquals(java.util.Map.of("L1", SeatStatus.HELD, "L2", SeatStatus.CONFIRMED), repository.takenSeats(showtime));
+        assertEquals(java.util.Map.of(), repository.takenSeats(UUID.randomUUID()));
+        assertEquals(ReservationStatus.HELD, repository.findById(held.id()).orElseThrow().status());
+    }
+
     private Reservation store(Reservation reservation) {
         assertInstanceOf(CreateHoldResult.Created.class,
                 repository.create(command(reservation, newKey(), "hash-" + reservation.id())));
@@ -407,7 +608,7 @@ class JdbcHoldRepositoryTest {
     /** A hold created far enough in the past that its window closed before {@code now}. */
     private Reservation overdueHold(UUID showtimeId, List<String> seats, Instant createdAt) {
         Reservation reservation = Reservation.hold(UUID.randomUUID(), UUID.randomUUID(), showtimeId, seats,
-                Duration.ofSeconds(600), createdAt, "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), createdAt, "Movie", "Room 1", null, 0);
         writtenHolds.add(reservation.id());
         return reservation;
     }
@@ -432,7 +633,7 @@ class JdbcHoldRepositoryTest {
         // PostgreSQL keeps microseconds: an instant with nanoseconds would not round-trip.
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation reservation = Reservation.hold(UUID.randomUUID(), userId, showtimeId, seats,
-                Duration.ofSeconds(600), now, movieTitle, roomName, 0);
+                Duration.ofSeconds(600), now, movieTitle, roomName, STARTS_AT, 0);
         writtenHolds.add(reservation.id());
         return reservation;
     }
@@ -446,7 +647,23 @@ class JdbcHoldRepositoryTest {
     }
 
     private static CreateHoldCommand command(Reservation reservation, String key, String requestHash) {
-        return new CreateHoldCommand(reservation, key, requestHash, CORRELATION);
+        return new CreateHoldCommand(reservation, key, requestHash, CORRELATION, NO_LIMIT);
+    }
+
+    private static CreateHoldCommand commandWithLimit(Reservation reservation, String key, String requestHash,
+            int maxActiveHolds) {
+        return new CreateHoldCommand(reservation, key, requestHash, CORRELATION, maxActiveHolds);
+    }
+
+    /** {@code count} holds of one user, each on its own showtime, stored under the limit of five. */
+    private List<Reservation> storeLimited(UUID userId, int count) {
+        List<Reservation> stored = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            Reservation reservation = hold(userId, seats("L" + i));
+            repository.create(commandWithLimit(reservation, newKey(), "hash-" + reservation.id(), 5));
+            stored.add(reservation);
+        }
+        return stored;
     }
 
     private static int count(String sql, Object... args) {

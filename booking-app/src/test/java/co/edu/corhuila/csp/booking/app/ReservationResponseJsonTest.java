@@ -30,7 +30,7 @@ class ReservationResponseJsonTest {
     @Test
     void theInstantsOfAReservationLeaveAsTheDateTimeOfTheContract() throws Exception {
         Reservation reservation = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", null, 0);
 
         String json = mapper.writeValueAsString(ReservationResponse.of(reservation));
 
