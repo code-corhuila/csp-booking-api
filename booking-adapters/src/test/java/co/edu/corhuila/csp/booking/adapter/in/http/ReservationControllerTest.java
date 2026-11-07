@@ -303,6 +303,25 @@ class ReservationControllerTest {
     }
 
     @Test
+    void theAdministratorListUsesTheAllReservationsUseCaseAndTheSamePageContract() throws Exception {
+        when(useCases.listAllReservations(any(ReservationQuery.class)))
+                .thenReturn(new ReservationPage(List.of(reservation()), 21L));
+
+        mockMvc.perform(read("/admin/reservations").param("page", "2").param("limit", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.meta.page").value(2))
+                .andExpect(jsonPath("$.meta.limit").value(3))
+                .andExpect(jsonPath("$.meta.total").value(21))
+                .andExpect(jsonPath("$.meta.totalPages").value(7));
+
+        ArgumentCaptor<ReservationQuery> query = ArgumentCaptor.forClass(ReservationQuery.class);
+        verify(useCases).listAllReservations(query.capture());
+        assertEquals(2, query.getValue().page());
+        assertEquals(3, query.getValue().limit());
+    }
+
+    @Test
     void aStatusTheContractDoesNotKnowIsA400() throws Exception {
         mockMvc.perform(read("/reservations").param("status", "CANCELLED"))
                 .andExpect(status().isBadRequest())
