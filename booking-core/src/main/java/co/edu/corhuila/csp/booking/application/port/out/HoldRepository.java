@@ -38,6 +38,12 @@ public interface HoldRepository {
     ReservationPage findByUser(UUID userId, ReservationQuery query);
 
     /**
+     * All reservations, from the newest createdAt to the oldest with the id as tiebreaker,
+     * in the window the administrator contract asks for.
+     */
+    ReservationPage findAll(ReservationQuery query);
+
+    /**
      * Makes the confirmation durable: the reservation, its hold and every seat become CONFIRMED and
      * the {@code BookingConfirmed} outbox event is written, all in one transaction (Norma 5.3.11).
      * A confirmed seat stays inside {@code uk_seat_hold_item_active_seat}, so it can never be held again.

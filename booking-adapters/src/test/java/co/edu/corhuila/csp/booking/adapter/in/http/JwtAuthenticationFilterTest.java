@@ -432,6 +432,17 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
+    void listingAllReservationsNeedsTheAdministratorPermission() throws Exception {
+        mockMvc.perform(get("/admin/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + tokenWith("booking:read:self")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        mockMvc.perform(get("/admin/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + tokenWith("booking:read:all")))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void theUnauthorizedAnswerComesBeforeThePermissionCheck() throws Exception {
         mockMvc.perform(post("/holds"))
                 .andExpect(status().isUnauthorized());

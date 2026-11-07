@@ -12,6 +12,7 @@ final class ClientRoutePermissions {
 
     static final String CREATE = "booking:create";
     static final String READ_OWN = "booking:read:self";
+    static final String READ_ALL = "booking:read:all";
 
     private static final Pattern CONFIRM = Pattern.compile("/reservations/[^/]+/confirm");
     private static final Pattern RESERVATION = Pattern.compile("/reservations/[^/]+");
@@ -23,6 +24,9 @@ final class ClientRoutePermissions {
     static Optional<String> requiredBy(String method, String path) {
         if (path == null) {
             return Optional.empty();
+        }
+        if ("GET".equals(method) && "/admin/reservations".equals(path)) {
+            return Optional.of(READ_ALL);
         }
         if ("POST".equals(method) && ("/holds".equals(path) || CONFIRM.matcher(path).matches())) {
             return Optional.of(CREATE);

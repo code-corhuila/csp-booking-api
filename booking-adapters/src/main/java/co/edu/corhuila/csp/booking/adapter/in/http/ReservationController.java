@@ -105,6 +105,16 @@ public class ReservationController {
         return ReservationListResponse.of(result, page, limit);
     }
 
+    @GetMapping("/admin/reservations")
+    ReservationListResponse allReservations(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int limit,
+            @RequestParam(required = false) ReservationStatus status,
+            @RequestParam(required = false) Instant createdBefore) {
+        ReservationPage result = useCases.listAllReservations(new ReservationQuery(page, limit, status, createdBefore));
+        return ReservationListResponse.of(result, page, limit);
+    }
+
     /** Where the Location of the 201 points: the route of the reservation this call created. */
     static URI locationOf(HttpServletRequest http, Reservation reservation) {
         return URI.create(http.getContextPath() + "/reservations/" + reservation.id());
