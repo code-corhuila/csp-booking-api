@@ -314,6 +314,22 @@ class JdbcHoldRepositoryTest {
     }
 
     @Test
+    void findAllIncludesEveryUserAndSupportsTheSameFiltersAndPagination() {
+        UUID user = UUID.randomUUID();
+        Reservation first = hold(user, seats("G2"));
+        Reservation second = hold(UUID.randomUUID(), seats("G3"));
+        assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(first, newKey(), "hash-all-1")));
+        assertInstanceOf(CreateHoldResult.Created.class, repository.create(command(second, newKey(), "hash-all-2")));
+
+        ReservationPage page = repository.findAll(new ReservationQuery(1, 1, ReservationStatus.HELD,
+                second.createdAt().plusSeconds(1)));
+
+        assertEquals(2, page.total());
+        assertEquals(1, page.items().size());
+        assertEquals(second.id(), page.items().get(0).id());
+    }
+
+    @Test
     void findOverdueHeldAnswersOnlyHeldPastTheirExpirationOldestFirst() {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Reservation newest = store(overdueHold(UUID.randomUUID(), seats("H1"), now.minusSeconds(610)));
