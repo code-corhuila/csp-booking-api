@@ -150,6 +150,11 @@ public class ReservationService implements ReservationUseCases {
     }
 
     @Override
+    public ReservationPage listAllReservations(ReservationQuery query) {
+        return holds.findAll(query);
+    }
+
+    @Override
     public ExpireHoldsResult expireHolds(int batchSize, String correlationId) {
         Instant now = clock.instant();
         List<Reservation> overdue = holds.findOverdueHeld(now, batchSize);
