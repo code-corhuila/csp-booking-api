@@ -73,7 +73,7 @@ class ReservationTest {
     }
 
     @Test
-    void theAccessDenialNamesTheReservationAndTheCaller() {
+    void theAccessDenialNamesTheReservationAndNeverTheCaller() {
         Reservation reservation = held(List.of("A1"), Reservation.DEFAULT_HOLD);
         UUID stranger = UUID.randomUUID();
 
@@ -81,7 +81,7 @@ class ReservationTest {
                 () -> reservation.requireOwner(stranger));
 
         assertTrue(denied.getMessage().contains(reservation.id().toString()));
-        assertTrue(denied.getMessage().contains(stranger.toString()));
+        assertFalse(denied.getMessage().contains(stranger.toString()));
     }
 
     @Test
