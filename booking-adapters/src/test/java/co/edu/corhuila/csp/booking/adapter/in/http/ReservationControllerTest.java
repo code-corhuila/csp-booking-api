@@ -253,7 +253,7 @@ class ReservationControllerTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error").value("FORBIDDEN"))
                 .andExpect(jsonPath("$.message").value(
-                        "reservation " + foreign + " belongs to another user (caller " + SUB + ")"));
+                        "reservation " + foreign + " belongs to another user"));
     }
 
     @Test
