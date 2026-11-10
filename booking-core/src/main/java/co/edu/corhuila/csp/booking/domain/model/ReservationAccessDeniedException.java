@@ -6,6 +6,6 @@ import java.util.UUID;
 public class ReservationAccessDeniedException extends DomainException {
 
     public ReservationAccessDeniedException(UUID reservationId, UUID callerId) {
-        super("reservation " + reservationId + " belongs to another user (caller " + callerId + ")");
+        super("reservation " + reservationId + " belongs to another user");
     }
 }
