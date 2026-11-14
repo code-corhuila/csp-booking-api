@@ -8,12 +8,17 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import co.edu.corhuila.csp.booking.application.port.in.CreateHoldInput;
+import co.edu.corhuila.csp.booking.application.port.out.CatalogUnavailableException;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldCommand;
 import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
+import co.edu.corhuila.csp.booking.application.port.out.LayoutSeat;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeCatalog;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeLayout;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeNotAvailableException;
 import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
 import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
@@ -39,12 +44,18 @@ class ReservationServiceTest {
     private static final UUID SHOWTIME = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final String KEY = "44444444-4444-4444-4444-444444444444";
     private static final String CORRELATION = "550e8400-e29b-41d4-a716-446655440000";
+    private static final int MAX_ACTIVE_HOLDS = 5;
+
+    private static final ShowtimeLayout LAYOUT = new ShowtimeLayout(SHOWTIME, "Movie", "Room 1",
+            Instant.parse("2026-11-01T20:00:00Z"), Instant.parse("2026-11-01T22:00:00Z"), 12000,
+            List.of(new LayoutSeat("A1", "A", 1, "STANDARD"), new LayoutSeat("A2", "A", 2, "STANDARD")));
 
     private final FakeHolds holds = new FakeHolds();
-    private final ReservationService service = new ReservationService(holds, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final ShowtimeCatalog catalog = (showtimeId, correlationId) -> LAYOUT;
+    private final ReservationService service = new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
     @Test
-    void aHoldStartsAtTheClockWithTheSnapshotOfTheRequestAndNoAmount() {
+    void aHoldStartsAtTheClockWithTheSnapshotOfCatalogAndItsAmount() {
         CreateHoldResult result = service.createHold(input());
 
         assertInstanceOf(CreateHoldResult.Created.class, result);
@@ -57,7 +68,8 @@ class ReservationServiceTest {
         assertEquals(NOW.plusSeconds(600), reservation.expiresAt());
         assertEquals("Movie", reservation.movieTitleSnapshot());
         assertEquals("Room 1", reservation.roomNameSnapshot());
-        assertEquals(0, reservation.totalAmount());
+        assertEquals(LAYOUT.startsAt(), reservation.showtimeStartsAt());
+        assertEquals(24000, reservation.totalAmount());
         assertNull(reservation.confirmedAt());
 
         assertEquals(KEY, holds.stored.idempotencyKey());
@@ -66,9 +78,67 @@ class ReservationServiceTest {
     }
 
     @Test
+    void theHoldAsksTheRepositoryToApplyTheLimitOfActiveHoldsOfTheUser() {
+        service.createHold(input());
+
+        assertEquals(MAX_ACTIVE_HOLDS, holds.stored.maxActiveHolds());
+    }
+
+    @Test
+    void aLimitBelowOneHoldIsRefusedWhenTheServiceIsBuilt() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new ReservationService(holds, catalog, Clock.fixed(NOW, ZoneOffset.UTC), 0));
+    }
+
+    @Test
+    void aSeatThatIsNotInTheLayoutOfCatalogIsRefusedAndNothingIsHeld() {
+        CreateHoldInput withUnknownSeat = new CreateHoldInput(USER, SHOWTIME, List.of("A1", "Z9"), 600,
+                KEY, CORRELATION);
+
+        BusinessRuleViolationException refused = assertThrows(BusinessRuleViolationException.class,
+                () -> service.createHold(withUnknownSeat));
+
+        assertEquals("The seats Z9 are not in the layout of the showtime", refused.getMessage());
+        assertNull(holds.stored);
+    }
+
+    @Test
+    void theLayoutIsReadForTheShowtimeOfTheRequestWithItsCorrelationId() {
+        List<String> asked = new ArrayList<>();
+        ReservationService spying = new ReservationService(holds, (showtimeId, correlationId) -> {
+            asked.add(showtimeId + "|" + correlationId);
+            return LAYOUT;
+        }, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
+
+        spying.createHold(input());
+
+        assertEquals(List.of(SHOWTIME + "|" + CORRELATION), asked);
+    }
+
+    @Test
+    void aCatalogThatCannotAnswerHoldsNothing() {
+        ReservationService blind = new ReservationService(holds, (showtimeId, correlationId) -> {
+            throw new CatalogUnavailableException("down");
+        }, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
+
+        assertThrows(CatalogUnavailableException.class, () -> blind.createHold(input()));
+        assertNull(holds.stored);
+    }
+
+    @Test
+    void aShowtimeThatCatalogDoesNotKnowHoldsNothing() {
+        ReservationService unknown = new ReservationService(holds, (showtimeId, correlationId) -> {
+            throw new ShowtimeNotAvailableException(showtimeId);
+        }, Clock.fixed(NOW, ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
+
+        assertThrows(ShowtimeNotAvailableException.class, () -> unknown.createHold(input()));
+        assertNull(holds.stored);
+    }
+
+    @Test
     void theHoldStartsAtThePrecisionThePlatformStoresSoThatAReplayMatchesTheFirstAnswer() {
-        ReservationService withNanoseconds = new ReservationService(holds, Clock.fixed(NOW.plusNanos(123),
-                ZoneOffset.UTC));
+        ReservationService withNanoseconds = new ReservationService(holds, catalog, Clock.fixed(NOW.plusNanos(123),
+                ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
 
         withNanoseconds.createHold(input());
 
@@ -83,7 +153,7 @@ class ReservationServiceTest {
 
         assertEquals(hash, hashOf(input()));
         assertEquals(hash, hashOf(withSeatsInAnotherOrder()));
-        assertNotEquals(hash, hashOf(withAnotherTitle()));
+        assertEquals(hash, hashOf(withAnotherTitle()));
         assertNotEquals(hash, hashOf(anotherUser()));
     }
 
@@ -122,8 +192,18 @@ class ReservationServiceTest {
     }
 
     @Test
+    void theAdministratorPageIsAskedWithoutAUserFilter() {
+        ReservationQuery query = new ReservationQuery(2, 10, ReservationStatus.HELD, NOW);
+        ReservationPage page = new ReservationPage(List.of(reservationOf(USER)), 1);
+        holds.page = page;
+
+        assertSame(page, service.listAllReservations(query));
+        assertEquals(query, holds.askedAllWith);
+    }
+
+    @Test
     void aDurationTheDomainForbidsNeverReachesTheRepository() {
-        CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), "Movie", "Room 1", 30, KEY,
+        CreateHoldInput tooShort = new CreateHoldInput(USER, SHOWTIME, List.of("A1"), 30, KEY,
                 CORRELATION);
 
         assertThrows(BusinessRuleViolationException.class, () -> service.createHold(tooShort));
@@ -133,7 +213,7 @@ class ReservationServiceTest {
     @Test
     void theExpirationSweepQueriesOverdueHoldsAndExpiresThemWithTheCorrelationId() {
         Reservation overdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(overdue);
 
         var result = service.expireHolds(100, CORRELATION);
@@ -153,7 +233,7 @@ class ReservationServiceTest {
     @Test
     void aHoldThatIsNotOverdueIsRefusedByTheDomainAndNeverReachesTheEngine() {
         Reservation notYetOverdue = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(10), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(notYetOverdue);
 
         assertThrows(InvalidStatusTransitionException.class, () -> service.expireHolds(100, CORRELATION));
@@ -164,9 +244,9 @@ class ReservationServiceTest {
     @Test
     void theExpirationSweepReportsRemainingOverdueForTheNextRun() {
         Reservation overdue1 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         Reservation overdue2 = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(overdue1, overdue2);
 
         var result = service.expireHolds(1, CORRELATION);
@@ -178,9 +258,9 @@ class ReservationServiceTest {
     @Test
     void aHoldThatAConfirmationWonDoesNotAbortTheRestOfTheBatch() {
         Reservation lost = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0);
         Reservation next = Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("B1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), NOW.minusSeconds(800), "Movie", "Room 1", null, 0);
         holds.overdue = List.of(lost, next);
         holds.raceLostId = lost.id();
 
@@ -217,8 +297,8 @@ class ReservationServiceTest {
 
     @Test
     void theConfirmationInstantHasThePrecisionThePlatformStores() {
-        ReservationService withNanoseconds = new ReservationService(holds, Clock.fixed(NOW.plusNanos(123),
-                ZoneOffset.UTC));
+        ReservationService withNanoseconds = new ReservationService(holds, catalog, Clock.fixed(NOW.plusNanos(123),
+                ZoneOffset.UTC), MAX_ACTIVE_HOLDS);
         Reservation held = reservationOf(USER);
         holds.found = Optional.of(held);
 
@@ -248,7 +328,7 @@ class ReservationServiceTest {
     @Test
     void aHoldPastItsExpirationCannotBeConfirmedEvenIfTheSweepDidNotRunYet() {
         holds.found = Optional.of(Reservation.hold(UUID.randomUUID(), USER, SHOWTIME, List.of("A1"),
-                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", 0));
+                Duration.ofSeconds(600), NOW.minusSeconds(700), "Movie", "Room 1", null, 0));
 
         assertThrows(InvalidStatusTransitionException.class,
                 () -> service.confirmReservation(USER, UUID.randomUUID(), CORRELATION));
@@ -275,6 +355,126 @@ class ReservationServiceTest {
                 () -> service.confirmReservation(USER, held.id(), CORRELATION));
     }
 
+    @Test
+    void theWorkflowConfirmsTheReservationOfAnyUser() {
+        Reservation held = reservationOf(OTHER);
+        holds.found = Optional.of(held);
+
+        Reservation confirmed = service.confirmReservationForWorkflow(held.id(), CORRELATION);
+
+        assertEquals(ReservationStatus.CONFIRMED, confirmed.status());
+        assertEquals(OTHER, confirmed.userId());
+        assertSame(confirmed, holds.confirmed);
+        assertEquals(CORRELATION, holds.confirmedCorrelation);
+    }
+
+    @Test
+    void theWorkflowConfirmingAConfirmedReservationGetsItBackAndWritesNothing() {
+        Reservation confirmed = reservationOf(USER).confirm(NOW);
+        holds.found = Optional.of(confirmed);
+
+        assertSame(confirmed, service.confirmReservationForWorkflow(confirmed.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowConfirmingAnUnknownReservationIsNotFound() {
+        assertThrows(ReservationNotFoundException.class,
+                () -> service.confirmReservationForWorkflow(UUID.randomUUID(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowConfirmingAnExpiredReservationIsRefused() {
+        Reservation expired = reservationOf(USER).expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(expired);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservationForWorkflow(expired.id(), CORRELATION));
+        assertNull(holds.confirmed);
+    }
+
+    @Test
+    void theWorkflowLosingTheRaceToAnotherConfirmationGetsTheConfirmedReservation() {
+        Reservation held = reservationOf(USER);
+        Reservation confirmedByTheOther = held.confirm(NOW);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+        holds.foundAfterRaceLost = confirmedByTheOther;
+
+        assertSame(confirmedByTheOther, service.confirmReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowLosingTheRaceToTheSweepIsRefused() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+        holds.confirmRaceLost = true;
+        holds.foundAfterRaceLost = held.expire(NOW.plusSeconds(601));
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.confirmReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowReleasesAHeldReservationOfAnyUserAndTheTransitionIsPersisted() {
+        Reservation held = reservationOf(OTHER);
+        holds.found = Optional.of(held);
+
+        Reservation released = service.releaseReservationForWorkflow(held.id(), CORRELATION);
+
+        assertEquals(ReservationStatus.EXPIRED, released.status());
+        assertEquals(OTHER, released.userId());
+        assertSame(released, holds.released);
+        assertEquals(NOW, holds.releasedAt);
+        assertEquals(CORRELATION, holds.releasedCorrelation);
+    }
+
+    @Test
+    void theWorkflowReleasingAnExpiredReservationGetsItBackAndWritesNothing() {
+        Reservation expired = reservationOf(USER).expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(expired);
+
+        assertSame(expired, service.releaseReservationForWorkflow(expired.id(), CORRELATION));
+        assertNull(holds.released);
+    }
+
+    @Test
+    void theWorkflowCannotReleaseAConfirmedOrAnUnknownReservation() {
+        Reservation confirmed = reservationOf(USER).confirm(NOW);
+        holds.found = Optional.of(confirmed);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.releaseReservationForWorkflow(confirmed.id(), CORRELATION));
+
+        holds.found = Optional.empty();
+        assertThrows(ReservationNotFoundException.class,
+                () -> service.releaseReservationForWorkflow(UUID.randomUUID(), CORRELATION));
+        assertNull(holds.released);
+    }
+
+    @Test
+    void theWorkflowLosingTheReleaseRaceToTheSweepGetsTheExpiredReservation() {
+        Reservation held = reservationOf(USER);
+        Reservation expiredByTheSweep = held.expire(NOW.plusSeconds(601));
+        holds.found = Optional.of(held);
+        holds.releaseRaceLost = true;
+        holds.foundAfterRaceLost = expiredByTheSweep;
+
+        assertSame(expiredByTheSweep, service.releaseReservationForWorkflow(held.id(), CORRELATION));
+    }
+
+    @Test
+    void theWorkflowLosingTheReleaseRaceToAConfirmationIsRefused() {
+        Reservation held = reservationOf(USER);
+        holds.found = Optional.of(held);
+        holds.releaseRaceLost = true;
+        holds.foundAfterRaceLost = held.confirm(NOW);
+
+        assertThrows(InvalidStatusTransitionException.class,
+                () -> service.releaseReservationForWorkflow(held.id(), CORRELATION));
+    }
+
     private String hashOf(CreateHoldInput request) {
         holds.stored = null;
         service.createHold(request);
@@ -282,25 +482,26 @@ class ReservationServiceTest {
     }
 
     private static CreateHoldInput input() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), 600, KEY,
+                CORRELATION);
     }
 
     private static CreateHoldInput withSeatsInAnotherOrder() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A2", "A1"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A2", "A1"), 600, KEY, CORRELATION);
     }
 
     private static CreateHoldInput withAnotherTitle() {
-        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), "Another Movie", "Room 1", 600, KEY,
+        return new CreateHoldInput(USER, SHOWTIME, List.of("A1", "A2"), 600, KEY,
                 CORRELATION);
     }
 
     private static CreateHoldInput anotherUser() {
-        return new CreateHoldInput(OTHER, SHOWTIME, List.of("A1", "A2"), "Movie", "Room 1", 600, KEY, CORRELATION);
+        return new CreateHoldInput(OTHER, SHOWTIME, List.of("A1", "A2"), 600, KEY, CORRELATION);
     }
 
     private static Reservation reservationOf(UUID userId) {
         return Reservation.hold(UUID.randomUUID(), userId, SHOWTIME, List.of("A1"), Duration.ofSeconds(600), NOW,
-                "Movie", "Room 1", 0);
+                "Movie", "Room 1", null, 0);
     }
 
     private static final class FakeHolds implements HoldRepository {
@@ -311,6 +512,7 @@ class ReservationServiceTest {
         private UUID askedById;
         private UUID askedForUser;
         private ReservationQuery askedWith;
+        private ReservationQuery askedAllWith;
         private List<Reservation> overdue = List.of();
         private List<Reservation> expired;
         private String expiredCorrelation;
@@ -318,14 +520,31 @@ class ReservationServiceTest {
         private Reservation confirmed;
         private String confirmedCorrelation;
         private boolean confirmRaceLost;
+        private Reservation foundAfterRaceLost;
+        private boolean releaseRaceLost;
+        private Reservation released;
+        private Instant releasedAt;
+        private String releasedCorrelation;
 
         @Override
         public void confirm(Reservation confirmedReservation, Instant now, String correlationId) {
             if (confirmRaceLost) {
+                found = Optional.ofNullable(foundAfterRaceLost).or(() -> found);
                 throw new InvalidStatusTransitionException("a sweep won the race");
             }
             confirmed = confirmedReservation;
             confirmedCorrelation = correlationId;
+        }
+
+        @Override
+        public void releaseHeld(Reservation releasedReservation, Instant now, String correlationId) {
+            if (releaseRaceLost) {
+                found = Optional.ofNullable(foundAfterRaceLost).or(() -> found);
+                throw new InvalidStatusTransitionException("another call won the race");
+            }
+            released = releasedReservation;
+            releasedAt = now;
+            releasedCorrelation = correlationId;
         }
 
         @Override
@@ -344,6 +563,12 @@ class ReservationServiceTest {
         public ReservationPage findByUser(UUID userId, ReservationQuery query) {
             askedForUser = userId;
             askedWith = query;
+            return page;
+        }
+
+        @Override
+        public ReservationPage findAll(ReservationQuery query) {
+            askedAllWith = query;
             return page;
         }
 

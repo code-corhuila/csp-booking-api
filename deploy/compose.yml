@@ -17,6 +17,23 @@ services:
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?set SPRING_DATASOURCE_URL in .env or in the platform}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set SPRING_DATASOURCE_USERNAME in .env or in the platform}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?set SPRING_DATASOURCE_PASSWORD in .env or in the platform}
+      # Catalog (ADR-020): base of its API inside the platform network, for example
+      # https://catalog-api:8082/api/v1/catalog. Empty keeps the routes that read Catalog answering 503;
+      # when set, it must be https:// and the token file and the CA file are required (ADR-067).
+      CATALOG_BASE_URL: ${CATALOG_BASE_URL:-}
+      CATALOG_SERVICE_TOKEN_FILE: ${CATALOG_SERVICE_TOKEN_FILE:-}
+      CATALOG_TLS_CA_FILE: ${CATALOG_TLS_CA_FILE:-}
+      # Subjects (sub) of the service credentials allowed on /internal/maintenance/ (the worker) and on
+      # /internal/workflow/ (the workflow service, ADR-035). Empty WORKFLOW_SUBJECTS keeps that family closed.
+      SERVICE_SUBJECTS: ${SERVICE_SUBJECTS:-csp-worker}
+      WORKFLOW_SUBJECTS: ${WORKFLOW_SUBJECTS:-}
+      # Most HELD reservations one user may have; the next hold answers 422 (DEC-008).
+      MAX_ACTIVE_HOLDS_PER_USER: ${MAX_ACTIVE_HOLDS_PER_USER:-5}
+    volumes:
+      # Service credential (sub booking-service) that the secret manager rotates; the host path comes from the platform.
+      - ${CATALOG_SERVICE_TOKEN_HOST_FILE:-/dev/null}:/run/secrets/catalog-service-token:ro
+      # Certificate of the internal CA of the environment (public); the host path comes from the platform (ADR-067).
+      - ${CATALOG_TLS_CA_HOST_FILE:-/dev/null}:/run/tls/ca.crt:ro
     # expose, not ports: only the gateway is reachable from the host.
     expose: ["8083"]
     # /health has no dependencies (DEC-005), so it only says that the process answers; the base path is

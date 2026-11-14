@@ -7,10 +7,16 @@ import co.edu.corhuila.csp.booking.application.port.out.CreateHoldResult;
 import co.edu.corhuila.csp.booking.application.port.out.ExpireHoldsResult;
 import co.edu.corhuila.csp.booking.application.port.out.HoldNoLongerOverdueException;
 import co.edu.corhuila.csp.booking.application.port.out.HoldRepository;
+import co.edu.corhuila.csp.booking.application.port.out.LayoutSeat;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationPage;
 import co.edu.corhuila.csp.booking.application.port.out.ReservationQuery;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeCatalog;
+import co.edu.corhuila.csp.booking.application.port.out.ShowtimeLayout;
+import co.edu.corhuila.csp.booking.domain.model.BusinessRuleViolationException;
+import co.edu.corhuila.csp.booking.domain.model.InvalidStatusTransitionException;
 import co.edu.corhuila.csp.booking.domain.model.Reservation;
 import co.edu.corhuila.csp.booking.domain.model.ReservationNotFoundException;
+import co.edu.corhuila.csp.booking.domain.model.ReservationStatus;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -20,6 +26,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -31,25 +38,49 @@ import java.util.stream.Collectors;
 public class ReservationService implements ReservationUseCases {
 
     private final HoldRepository holds;
+    private final ShowtimeCatalog catalog;
     private final Clock clock;
+    private final int maxActiveHoldsPerUser;
 
-    public ReservationService(HoldRepository holds, Clock clock) {
+    public ReservationService(HoldRepository holds, ShowtimeCatalog catalog, Clock clock, int maxActiveHoldsPerUser) {
+        if (maxActiveHoldsPerUser < 1) {
+            throw new IllegalArgumentException("the limit of held reservations per user is at least 1");
+        }
         this.holds = holds;
+        this.catalog = catalog;
         this.clock = clock;
+        this.maxActiveHoldsPerUser = maxActiveHoldsPerUser;
     }
 
     @Override
     public CreateHoldResult createHold(CreateHoldInput input) {
-        // Cut 2 runs without CATALOG_BASE_URL: the title and the room are the values of the
-        // request and the start time of the showtime stays null (ADR-020). The platform stores
-        // microseconds, so the hold starts at one: a replay must answer the exact instant the
-        // first answer did.
+        ShowtimeLayout showtime = catalog.layoutOf(input.showtimeId(), input.correlationId());
+        requireSeatsInLayout(input, showtime);
+        // The title, the room, the start time and the price are Catalog's, copied once and never refreshed (ADR-020);
+        // whatever the request says about them is ignored. The platform stores microseconds, so the hold starts at one: a replay
+        // must answer the exact instant the first answer did.
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         Reservation reservation = Reservation.hold(UUID.randomUUID(), input.userId(), input.showtimeId(),
-                input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, input.movieTitle(),
-                input.roomName(), 0);
+                input.seatLabels(), Duration.ofSeconds(input.holdDurationSeconds()), now, showtime.movieTitle(),
+                showtime.roomName(), showtime.startsAt(), showtime.price() * input.seatLabels().size());
         return holds.create(
-                new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId()));
+                new CreateHoldCommand(reservation, input.idempotencyKey(), requestHash(input), input.correlationId(),
+                maxActiveHoldsPerUser));
+    }
+
+    /**
+     * A seat that Catalog does not list for the showtime is never held (STRIDE T, csp-docs#289). Catalog is the
+     * authority of the layout, so when it cannot answer the hold fails instead of trusting the request.
+     */
+    private static void requireSeatsInLayout(CreateHoldInput input, ShowtimeLayout showtime) {
+        Set<String> layout = showtime.seats().stream()
+                .map(LayoutSeat::label)
+                .collect(Collectors.toSet());
+        List<String> unknown = input.seatLabels().stream().filter(label -> !layout.contains(label)).toList();
+        if (!unknown.isEmpty()) {
+            throw new BusinessRuleViolationException(
+                    "The seats " + String.join(", ", unknown) + " are not in the layout of the showtime");
+        }
     }
 
     @Override
@@ -72,8 +103,55 @@ public class ReservationService implements ReservationUseCases {
     }
 
     @Override
+    public Reservation confirmReservationForWorkflow(UUID reservationId, String correlationId) {
+        Reservation reservation = holds.findById(reservationId)
+                .orElseThrow(() -> new ReservationNotFoundException(reservationId));
+        if (reservation.status() == ReservationStatus.CONFIRMED) {
+            return reservation;
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        try {
+            Reservation confirmed = reservation.confirm(now);
+            holds.confirm(confirmed, now, correlationId);
+            return confirmed;
+        } catch (InvalidStatusTransitionException refused) {
+            // A concurrent call can confirm it between the read and the write: that reservation is
+            // the answer, anything else is the refusal.
+            return holds.findById(reservationId)
+                    .filter(current -> current.status() == ReservationStatus.CONFIRMED)
+                    .orElseThrow(() -> refused);
+        }
+    }
+
+    @Override
+    public Reservation releaseReservationForWorkflow(UUID reservationId, String correlationId) {
+        Reservation reservation = holds.findById(reservationId)
+                .orElseThrow(() -> new ReservationNotFoundException(reservationId));
+        if (reservation.status() == ReservationStatus.EXPIRED) {
+            return reservation;
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        try {
+            Reservation released = reservation.release(now);
+            holds.releaseHeld(released, now, correlationId);
+            return released;
+        } catch (InvalidStatusTransitionException refused) {
+            // The sweep can expire it between the read and the write: that reservation is the
+            // answer. A confirmation that won the race, or a confirmed one, stays refused.
+            return holds.findById(reservationId)
+                    .filter(current -> current.status() == ReservationStatus.EXPIRED)
+                    .orElseThrow(() -> refused);
+        }
+    }
+
+    @Override
     public ReservationPage listReservations(UUID callerId, ReservationQuery query) {
         return holds.findByUser(callerId, query);
+    }
+
+    @Override
+    public ReservationPage listAllReservations(ReservationQuery query) {
+        return holds.findAll(query);
     }
 
     @Override
@@ -100,7 +178,7 @@ public class ReservationService implements ReservationUseCases {
 
     /**
      * The hash that tells a replay from a conflicting payload (Norma 5.3.8): the same request
-     * hashes the same however the seats were ordered, and the user is part of it so a key of one
+     * hashes the same however the seats were ordered (the title and the room, which are ignored, are not part of it), and the user is part of it so a key of one
      * client can never be answered with the reservation of another.
      */
     private static String requestHash(CreateHoldInput input) {
@@ -108,8 +186,6 @@ public class ReservationService implements ReservationUseCases {
                 input.userId().toString(),
                 input.showtimeId().toString(),
                 input.seatLabels().stream().sorted().collect(Collectors.joining(",")),
-                String.valueOf(input.movieTitle()),
-                String.valueOf(input.roomName()),
                 Integer.toString(input.holdDurationSeconds()));
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

@@ -57,7 +57,12 @@ reads is listed in `.env.example`; copy it to `.env` for local values and never 
 | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/csp` | The database of this domain |
 | `SPRING_DATASOURCE_USERNAME` | `booking_app` | The login user of the service, never the administrator |
 | `SPRING_DATASOURCE_PASSWORD` | `change-me` | Set it to the value `csp-infra-postgres` gave to `booking_app` |
-| `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the internal operations (ADR-020) |
+| `SERVICE_SUBJECTS` | `csp-worker` | The `sub` of the service tokens allowed on the maintenance operations under `/internal/maintenance/` (ADR-020) |
+| `WORKFLOW_SUBJECTS` | empty | The `sub` of the service tokens allowed on `/internal/workflow/` (ADR-035). Empty keeps that family closed; a subject of one list gets `403` on the other |
+| `MAX_ACTIVE_HOLDS_PER_USER` | `5` | The most `HELD` reservations one user may have; a hold beyond it answers `422 BUSINESS_RULE_VIOLATION` and `seatLabels` takes at most 10 entries (DEC-008) |
+| `CATALOG_BASE_URL` | none | The base of the Catalog API inside the platform network, for example `https://catalog-api:8082/api/v1/catalog` (ADR-020). It must be an `https://` URL: Booking refuses to start with any other. Without it the routes that read Catalog answer `503` |
+| `CATALOG_SERVICE_TOKEN_FILE` | none, **required** with `CATALOG_BASE_URL` | The file with the service credential (`sub` `booking-service`) the secret manager rotates; it is re-read at most every 30 seconds |
+| `CATALOG_TLS_CA_FILE` | none, **required** with `CATALOG_BASE_URL` (`/run/tls/ca.crt` in the container) | The public certificate (PEM) of the internal CA of the environment. It is the only authority Booking trusts when it calls Catalog, and the name of Catalog (`catalog-api`) is verified (ADR-067). Compose mounts it read-only from the host variable `CATALOG_TLS_CA_HOST_FILE` |
 | `PORT` | `8083` | The listening port |
 
 ### Run it
@@ -103,6 +108,8 @@ The routes are served under `/api/v1/booking`, the base `booking-service.yaml` o
 | `POST /reservations/{reservationId}/confirm` | Confirms a `HELD` reservation of the caller: `200` with the reservation, `422 INVALID_STATUS_TRANSITION` when it is expired or already confirmed, `403` for another user's, `404` when it does not exist |
 | `GET /reservations/{reservationId}` | One reservation of the caller (`403` for another user's, `404` when it does not exist) |
 | `GET /reservations` | Page of the caller, newest first: `page`, `limit`, `status`, `createdBefore` |
+| `GET /admin/reservations` | Page of every user's reservations for administrators, with the same filters and order |
+| `GET /showtimes/{showtimeId}/seats` | The seat map of a showtime for any role: the layout of Catalog with `AVAILABLE`, `HELD` or `CONFIRMED` per seat, never cached; `404` when Catalog has no such showtime, `503` when it cannot answer (ADR-046) |
 
 ```bash
 curl http://localhost:8083/api/v1/booking/health
@@ -122,6 +129,14 @@ The token is a JWT signed with RS256 with an `exp` and a `sub` that is **the UUI
 the envelope of the contract: `error`, `message`, the `details` that name the fields that broke a validation, and
 `traceId`.
 
+A client route also needs the permission of the `permissions` claim: `booking:create` for `POST /holds` and
+`POST /reservations/{id}/confirm`, `booking:read:self` for `GET /reservations` and `GET /reservations/{id}`, and
+`booking:read:all` for `GET /admin/reservations`. A valid token without it is a `403 FORBIDDEN`. The `exp` is accepted
+up to 30 seconds late, for the clock difference between services (Norma 5.3.7).
+The access token of a user must carry `iat` and `exp` minus `iat` must not exceed 900 seconds plus those 30 (ADR-054): only Auth reads the list of revoked
+tokens, so this keeps the window of a stolen or revoked token at 15 minutes even if `APP_AUTH_JWT_EXPIRY` is raised. A service credential is not capped.
+A token from `dev-token.sh` carries no `permissions`, so it gets `403` on those routes until infra adds them.
+
 **Idempotency.** `POST /holds` stores its `Idempotency-Key` with the hold, so repeating the request answers `200` with
 the original reservation (Norma 5.3.8), and the same key with another body is a `409`. `POST /reservations/{id}/confirm`
 requires the header and checks its shape (16 to 100 characters) but does not store it: a reservation is confirmed once
@@ -130,14 +145,24 @@ and `BookingConfirmed` is written once, because the transition is guarded, so a 
 
 ## Internal operations
 
-Not part of the public contract and never routed by the gateway: only `csp-worker` calls them, with a service token.
-A client token receives `403`.
+Not part of the public contract and never routed by the gateway: they take a service token. `csp-worker` calls the maintenance
+ones (`SERVICE_SUBJECTS`) and `csp-workflow` the workflow ones (`WORKFLOW_SUBJECTS`, ADR-035); a token of the other family or a
+client token receives `403`. A service credential must carry `iss` `csp-auth` and an `aud` that contains `csp-internal` (ADR-056);
+a token whose `sub` is a service subject but lacks either claim, or has another value (a user's access token has `aud` `csp-api`),
+receives `401`, and a valid credential of a subject that the route does not allow receives `403`.
+
+Every call to these routes, answered or rejected, writes one log line with `sub` (as the token claims it; on `authenticated=false` it is only a claim), `route`,
+`status`, `authenticated`, the `traceId` and `tokenSha256`, the SHA-256 digest of the token: it tells which credential made a call without being able to replay it.
+The token itself is never logged.
 
 | Route | Answer |
 |---|---|
 | `POST /internal/maintenance/expire-holds` | Expires the HELD reservations past their time (HU-BOOKING-002): `200` `{"expired", "remaining"}`, `401`/`403` |
+| `POST /internal/workflow/holds` | The hold of `POST /holds` for the `userId` of the body: `201`, `200` on a replayed key, `409`, `422`, `400`, `401`/`403` |
+| `POST /internal/workflow/reservations/{id}/confirm` | Confirms a reservation of any user. Idempotent by state: an already `CONFIRMED` one answers `200` and writes no second event. `404`, `422` for an expired one |
+| `POST /internal/workflow/reservations/{id}/release` | Releases a HELD reservation of any user before its deadline: `EXPIRED`, seats available again, one `ReservationExpired`. An already `EXPIRED` one answers `200` and writes nothing; a `CONFIRMED` one is `422`. `404` |
 
-- **Authentication:** the same RS256 validation as every route. The `sub` of the token must be one of `SERVICE_SUBJECTS`
+- **Authentication:** the same RS256 validation as every route, plus `iss` `csp-auth` and `aud` containing `csp-internal` (ADR-056). The `sub` of the token must be one of `SERVICE_SUBJECTS`
   (`csp-worker` by default); `X-Correlation-Id` is required and travels to the event.
 - **Limits (Norma 5.3.10):** one call expires at most 100 holds, oldest first; `remaining` tells the worker whether
   another run is needed. The interval between runs belongs to `csp-worker`.
@@ -154,15 +179,19 @@ A client token receives `403`.
 `JdbcHoldRepositoryTest` runs only when `TEST_DATABASE_URL` is set, for example
 `jdbc:postgresql://localhost:5432/csp?user=postgres&password=postgres`, over a database where the migrations of
 `csp-booking-db` were applied. CI does this on every Pull Request and fails when the `DB_DEPLOY_KEY` secret (the private half of a read-only deploy key of that repository) is
-missing, so a green run means the tests ran. The schema is pinned to a `csp-booking-db` commit (`ref` in `ci.yml`):
-to test a newer schema, move that pin in a Pull Request of its own.
+missing, so a green run means the tests ran. The schema is pinned to a **release tag** of `csp-booking-db` (`ref` in
+`ci.yml`, today `v2.0.0`), which is the versioned artifact of that repository (numeral 11.5): to test a newer schema,
+move the pin to the next `vX.Y.Z` in a Pull Request of its own. Between releases, to try a migration that is not
+tagged yet, point `ref` at its commit in the branch of that Pull Request and put the tag back before merging.
 
 ## What is missing
 
 - **No gateway.** Nothing routes `/api/v1/booking` yet and the service has no CORS configuration, so a browser cannot
   call it directly; the portals expect the gateway of Annex F.
-- **No Catalog snapshot.** The service runs without `CATALOG_BASE_URL` (Cut 2): `movieTitle` and `roomName` come in the
-  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020).
+- **No Catalog snapshot.** The hold takes no snapshot from Catalog (TD-040): `movieTitle` and `roomName` come in the
+  request of the hold, `showtimeStartsAt` of `BookingConfirmed` is `null` and `totalAmount` is `0` (ADR-020). The hold does read
+  the layout of the showtime to refuse a seat that is not in it (`422`, nothing held; `404` for a showtime Catalog does not
+  know), so without `CATALOG_BASE_URL`, or with Catalog down, `POST /holds` answers `503` (`csp-docs#289`).
 - **No replay of a confirmation.** See the idempotency note above.
 - **No release of a hold by the client.** The contract 3.1.0 has no such route; a hold ends by confirmation or expiration.
 - **The outbox has no purge** and nothing deletes from it (`csp-booking-db#18`).

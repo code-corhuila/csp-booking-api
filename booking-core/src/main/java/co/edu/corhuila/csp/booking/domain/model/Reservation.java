@@ -24,6 +24,7 @@ public record Reservation(
         Instant expiresAt,
         String movieTitleSnapshot,
         String roomNameSnapshot,
+        Instant showtimeStartsAt,
         long totalAmount,
         Instant createdAt,
         Instant confirmedAt) {
@@ -56,12 +57,13 @@ public record Reservation(
 
     /** Creates a HELD reservation that expires {@code duration} after {@code now}. */
     public static Reservation hold(UUID id, UUID userId, UUID showtimeId, List<String> seatLabels, Duration duration,
-                                   Instant now, String movieTitleSnapshot, String roomNameSnapshot, long totalAmount) {
+                                   Instant now, String movieTitleSnapshot, String roomNameSnapshot,
+                                   Instant showtimeStartsAt, long totalAmount) {
         if (duration.compareTo(MIN_HOLD) < 0 || duration.compareTo(MAX_HOLD) > 0) {
             throw new BusinessRuleViolationException("the hold lasts between 60 and 900 seconds");
         }
         return new Reservation(id, userId, showtimeId, seatLabels, ReservationStatus.HELD, now.plus(duration),
-                movieTitleSnapshot, roomNameSnapshot, totalAmount, now, null);
+                movieTitleSnapshot, roomNameSnapshot, showtimeStartsAt, totalAmount, now, null);
     }
 
     /** True when the hold time has run out at {@code now}, whether or not it was already marked EXPIRED. */
@@ -75,7 +77,7 @@ public record Reservation(
             throw new InvalidStatusTransitionException("the reservation cannot be confirmed from its current status");
         }
         return new Reservation(id, userId, showtimeId, seatLabels, ReservationStatus.CONFIRMED, expiresAt,
-                movieTitleSnapshot, roomNameSnapshot, totalAmount, createdAt, now);
+                movieTitleSnapshot, roomNameSnapshot, showtimeStartsAt, totalAmount, createdAt, now);
     }
 
     /** HELD and overdue becomes EXPIRED. Anything else cannot expire. */
@@ -84,7 +86,19 @@ public record Reservation(
             throw new InvalidStatusTransitionException("only an overdue HELD reservation can expire");
         }
         return new Reservation(id, userId, showtimeId, seatLabels, ReservationStatus.EXPIRED, expiresAt,
-                movieTitleSnapshot, roomNameSnapshot, totalAmount, createdAt, confirmedAt);
+                movieTitleSnapshot, roomNameSnapshot, showtimeStartsAt, totalAmount, createdAt, confirmedAt);
+    }
+
+    /**
+     * A HELD reservation is released on demand, before or after its deadline, and becomes EXPIRED
+     * (ADR-035). The hold time stays as it was. Anything but HELD cannot be released.
+     */
+    public Reservation release(Instant now) {
+        if (status != ReservationStatus.HELD) {
+            throw new InvalidStatusTransitionException("only a HELD reservation can be released");
+        }
+        return new Reservation(id, userId, showtimeId, seatLabels, ReservationStatus.EXPIRED, expiresAt,
+                movieTitleSnapshot, roomNameSnapshot, showtimeStartsAt, totalAmount, createdAt, confirmedAt);
     }
 
     /** The reservation can only be read by the user who owns it. */

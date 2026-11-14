@@ -47,12 +47,13 @@ jobs:
         run: |
           echo "::error::DB_DEPLOY_KEY is not set, so the PostgreSQL integration tests cannot run"
           exit 1
-      # Pinned to a commit, not to develop: a green run tells which schema it tested, and a schema
-      # change in csp-booking-db cannot break an unrelated Pull Request. Move the pin on purpose.
+      # Pinned to a release tag of csp-booking-db (numeral 11.5), not to develop and not to a commit: a
+      # green run tells which published schema version it tested, and a schema change in csp-booking-db
+      # cannot break an unrelated Pull Request. Move the pin on purpose, to the next vX.Y.Z.
       - uses: actions/checkout@v4
         with:
           repository: code-corhuila/csp-booking-db
-          ref: 10740a0b41cf1cd277dd15e36fb2a4837a88cf3e
+          ref: v2.0.0
           path: csp-booking-db
           ssh-key: ${{ secrets.DB_DEPLOY_KEY }}
       - name: Apply the booking schema

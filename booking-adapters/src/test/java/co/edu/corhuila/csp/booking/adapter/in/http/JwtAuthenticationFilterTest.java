@@ -2,6 +2,7 @@ package co.edu.corhuila.csp.booking.adapter.in.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -18,6 +19,7 @@ import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Date;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -38,6 +41,7 @@ class JwtAuthenticationFilterTest {
     private static final String SECRET = "01234567890123456789012345678901";
 
     private MockMvc mockMvc;
+    private KeyPair serviceKey;
     private RSAPrivateKey servicePrivateKey;
     private RSAPrivateKey otherPrivateKey;
 
@@ -45,14 +49,9 @@ class JwtAuthenticationFilterTest {
     void setUp() throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
-        KeyPair serviceKey = generator.generateKeyPair();
+        serviceKey = generator.generateKeyPair();
         KeyPair otherKey = generator.generateKeyPair();
-        JwtAuthenticationFilter filter =
-                new JwtAuthenticationFilter((RSAPublicKey) serviceKey.getPublic(), new ObjectMapper(),
-                        Set.of("csp-worker"));
-        this.mockMvc = MockMvcBuilders.standaloneSetup(new ProbeController())
-                .addFilters(new CorrelationIdFilter(), filter)
-                .build();
+        this.mockMvc = mockMvcWith(Set.of("csp-workflow"));
         this.servicePrivateKey = (RSAPrivateKey) serviceKey.getPrivate();
         this.otherPrivateKey = (RSAPrivateKey) otherKey.getPrivate();
     }
@@ -102,6 +101,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void anExpiredTokenIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() - 60_000))
                 .build();
@@ -114,7 +114,8 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aTokenWithoutExpirationIsRejected() throws Exception {
-        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(SUB).build();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date()).subject(SUB).build();
 
         String token = rs256Token(servicePrivateKey, claims);
 
@@ -126,6 +127,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aTokenWithoutSubjectIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
 
@@ -139,6 +141,7 @@ class JwtAuthenticationFilterTest {
     @Test
     void aTokenWhoseSubjectIsNotAnIdOfThisPlatformIsRejected() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject("client-7")
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
@@ -165,7 +168,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aServiceTokenCallsAnInternalOperation() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-worker"));
 
         mockMvc.perform(get("/internal/probe")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -184,7 +187,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void aServiceTokenCallingAClientOperationReceivesForbidden() throws Exception {
-        String token = rs256Token(servicePrivateKey, claimsOf("csp-worker"));
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-worker"));
 
         mockMvc.perform(get("/holds")
                         .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
@@ -202,8 +205,333 @@ class JwtAuthenticationFilterTest {
                 .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
     }
 
+    private MockMvc mockMvcWith(Set<String> workflowSubjects) {
+        JwtAuthenticationFilter filter =
+                new JwtAuthenticationFilter((RSAPublicKey) serviceKey.getPublic(), new ObjectMapper(),
+                        Set.of("csp-worker"), workflowSubjects);
+        return MockMvcBuilders.standaloneSetup(new ProbeController())
+                .addFilters(new CorrelationIdFilter(), filter)
+                .build();
+    }
+
+    @Test
+    void aWorkflowTokenCallsAWorkflowOperation() throws Exception {
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-workflow"));
+
+        mockMvc.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void aWorkflowTokenCallingAMaintenanceOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-workflow"));
+
+        mockMvc.perform(get("/internal/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aMaintenanceTokenCallingAWorkflowOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-worker"));
+
+        mockMvc.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aClientTokenCallingAWorkflowOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, validClaims());
+
+        mockMvc.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aWorkflowTokenCallingAClientOperationReceivesForbidden() throws Exception {
+        String token = rs256Token(servicePrivateKey, serviceClaims("csp-workflow"));
+
+        mockMvc.perform(get("/holds")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + token))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void withNoWorkflowSubjectsTheWorkflowOperationsAreClosed() throws Exception {
+        MockMvc closed = mockMvcWith(Set.of());
+
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, serviceClaims("csp-workflow"))))
+                .andExpect(status().isForbidden());
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, claimsOf("csp-workflow"))))
+                .andExpect(status().isUnauthorized());
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, serviceClaims("csp-worker"))))
+                .andExpect(status().isForbidden());
+        closed.perform(get("/internal/workflow/probe")
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + rs256Token(servicePrivateKey, validClaims())))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void aTokenThatExpiredWithinTheClockSkewIsAccepted() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() - 10_000))
+                .build();
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void aTokenThatExpiredBeyondTheClockSkewIsRejected() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() - 35_000))
+                .build();
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void anAccessTokenOfFifteenMinutesIsAccepted() throws Exception {
+        callsHoldsWithLifetime(900).andExpect(status().isOk());
+    }
+
+    @Test
+    void anAccessTokenOfFifteenMinutesAndTheClockToleranceIsAccepted() throws Exception {
+        callsHoldsWithLifetime(930).andExpect(status().isOk());
+    }
+
+    @Test
+    void anAccessTokenThatLivesLongerThanFifteenMinutesPlusTheToleranceIsRejected() throws Exception {
+        callsHoldsWithLifetime(931).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+        callsHoldsWithLifetime(3600).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void anAccessTokenWithoutIssuedAtIsRejected() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .build();
+
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceCredentialKeepsItsLongLifeAndNeedsNoIssuedAt() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker")
+                .expirationTime(new Date(System.currentTimeMillis() + 90L * 24 * 3600 * 1000))
+                .build();
+
+        callsInternalWith(claims).andExpect(status().isOk());
+    }
+
+    /** A token of a user issued now that expires {@code lifetimeSeconds} later. */
+    private org.springframework.test.web.servlet.ResultActions callsHoldsWithLifetime(long lifetimeSeconds) throws Exception {
+        long now = System.currentTimeMillis();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(SUB)
+                .issueTime(new Date(now))
+                .expirationTime(new Date(now + lifetimeSeconds * 1000))
+                .build();
+        return mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                "Bearer " + rs256Token(servicePrivateKey, claims)));
+    }
+
+    @Test
+    void creatingAHoldNeedsThePermissionToCreate() throws Exception {
+        mockMvc.perform(post("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + tokenWith("booking:create")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void creatingAHoldWithoutThePermissionReceivesForbidden() throws Exception {
+        mockMvc.perform(post("/holds")
+                        .header(CorrelationIdFilter.CORRELATION_HEADER, CORRELATION)
+                        .header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                                "Bearer " + tokenWith("booking:read:self", "catalog:read")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.traceId").value(CORRELATION));
+    }
+
+    @Test
+    void aTokenWithoutPermissionsClaimCannotCreateAHold() throws Exception {
+        mockMvc.perform(post("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, validClaims())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void aPermissionsClaimThatIsNotAListGrantsNothing() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .claim("permissions", "booking:create")
+                .build();
+
+        mockMvc.perform(post("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void confirmingAReservationNeedsThePermissionToCreate() throws Exception {
+        mockMvc.perform(post("/reservations/" + SUB + "/confirm").header(
+                        JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + tokenWith("booking:read:self")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/reservations/" + SUB + "/confirm").header(
+                        JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + tokenWith("booking:create")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void readingReservationsNeedsThePermissionToReadOwn() throws Exception {
+        String reader = tokenWith("booking:read:self");
+        String creatorOnly = tokenWith("booking:create");
+
+        mockMvc.perform(get("/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER, "Bearer " + reader))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/reservations/" + SUB).header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + reader))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + creatorOnly))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        mockMvc.perform(get("/reservations/" + SUB).header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + creatorOnly))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void listingAllReservationsNeedsTheAdministratorPermission() throws Exception {
+        mockMvc.perform(get("/admin/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + tokenWith("booking:read:self")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        mockMvc.perform(get("/admin/reservations").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + tokenWith("booking:read:all")))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void theUnauthorizedAnswerComesBeforeThePermissionCheck() throws Exception {
+        mockMvc.perform(post("/holds"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    private String tokenWith(String... permissions) throws JOSEException {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issueTime(new Date())
+                .subject(SUB)
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000))
+                .claim("permissions", List.of(permissions))
+                .build();
+        return rs256Token(servicePrivateKey, claims);
+    }
+
+    @Test
+    void aServiceTokenWithoutIssuerIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").issuer(null).build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWithAnotherIssuerIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").issuer("another-issuer").build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWithoutAudienceIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience((String) null).build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWithAnotherAudienceIsRejected() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience("another-audience").build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aUsersAccessTokenWithAServiceSubjectIsNotAServiceCredential() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience("csp-api").build();
+
+        callsInternalWith(claims).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void aServiceTokenWhoseAudienceListContainsTheInternalOneIsAccepted() throws Exception {
+        JWTClaimsSet claims = serviceClaimsBuilder("csp-worker").audience(List.of("csp-api", "csp-internal")).build();
+
+        callsInternalWith(claims).andExpect(status().isOk());
+    }
+
+    @Test
+    void aValidCredentialOfASubjectThatIsNotAllowedReceivesForbidden() throws Exception {
+        JWTClaimsSet claims = serviceClaims("booking-service");
+
+        callsInternalWith(claims).andExpect(status().isForbidden()).andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        mockMvc.perform(get("/holds").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                        "Bearer " + rs256Token(servicePrivateKey, claims)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions callsInternalWith(JWTClaimsSet claims) throws Exception {
+        return mockMvc.perform(get("/internal/probe").header(JwtAuthenticationFilter.AUTHORIZATION_HEADER,
+                "Bearer " + rs256Token(servicePrivateKey, claims)));
+    }
+
+    /** The claims of a service credential issued by the identity service (ADR-052, ADR-056). */
+    private static JWTClaimsSet.Builder serviceClaimsBuilder(String subject) {
+        return new JWTClaimsSet.Builder()
+                .subject(subject)
+                .issuer("csp-auth")
+                .audience("csp-internal")
+                .expirationTime(new Date(System.currentTimeMillis() + 60_000));
+    }
+
+    private static JWTClaimsSet serviceClaims(String subject) {
+        return serviceClaimsBuilder(subject).build();
+    }
+
     private static JWTClaimsSet claimsOf(String subject) {
         return new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(subject)
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
@@ -211,6 +539,7 @@ class JwtAuthenticationFilterTest {
 
     private static JWTClaimsSet validClaims() {
         return new JWTClaimsSet.Builder()
+                .issueTime(new Date())
                 .subject(SUB)
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000))
                 .build();
@@ -230,9 +559,34 @@ class JwtAuthenticationFilterTest {
             return "held";
         }
 
+        @PostMapping("/holds")
+        String createHold() {
+            return "created";
+        }
+
+        @PostMapping("/reservations/{id}/confirm")
+        String confirm() {
+            return "confirmed";
+        }
+
+        @GetMapping("/reservations")
+        String reservations() {
+            return "list";
+        }
+
+        @GetMapping("/reservations/{id}")
+        String reservation() {
+            return "one";
+        }
+
         @GetMapping("/internal/probe")
         String internal() {
             return "internal";
+        }
+
+        @GetMapping("/internal/workflow/probe")
+        String workflow() {
+            return "workflow";
         }
 
         @GetMapping("/health")

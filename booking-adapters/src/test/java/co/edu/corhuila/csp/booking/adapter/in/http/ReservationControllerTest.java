@@ -29,6 +29,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -109,6 +111,35 @@ class ReservationControllerTest {
                 .andExpect(header().doesNotExist("Location"))
                 .andExpect(jsonPath("$.id").value(original.id().toString()))
                 .andExpect(jsonPath("$.status").value("HELD"));
+    }
+
+    @Test
+    void moreThanTenSeatsInOneRequestIsA400ThatNamesSeatLabels() throws Exception {
+        mockMvc.perform(hold(KEY, bodyWithSeats(11)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.details[0].field").value("seatLabels"));
+    }
+
+    @Test
+    void tenSeatsInOneRequestAreAccepted() throws Exception {
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(reservation()));
+
+        mockMvc.perform(hold(KEY, bodyWithSeats(10))).andExpect(status().isCreated());
+    }
+
+    @Test
+    void aHoldWithoutTheTitleAndTheRoomIsAccepted() throws Exception {
+        when(useCases.createHold(any())).thenReturn(new CreateHoldResult.Created(reservation()));
+
+        mockMvc.perform(hold(KEY, "{\"showtimeId\":\"33333333-3333-3333-3333-333333333333\",\"seatLabels\":[\"A1\"]}"))
+                .andExpect(status().isCreated());
+    }
+
+    private static String bodyWithSeats(int count) {
+        String labels = IntStream.range(0, count).mapToObj(i -> "\"S" + i + "\"").collect(Collectors.joining(","));
+        return "{\"showtimeId\":\"33333333-3333-3333-3333-333333333333\",\"seatLabels\":[" + labels
+                + "],\"movieTitle\":\"Movie\",\"roomName\":\"Room 1\"}";
     }
 
     @Test
@@ -222,7 +253,7 @@ class ReservationControllerTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error").value("FORBIDDEN"))
                 .andExpect(jsonPath("$.message").value(
-                        "reservation " + foreign + " belongs to another user (caller " + SUB + ")"));
+                        "reservation " + foreign + " belongs to another user"));
     }
 
     @Test
@@ -269,6 +300,25 @@ class ReservationControllerTest {
         assertEquals(20, query.getValue().limit());
         assertEquals(ReservationStatus.HELD, query.getValue().status());
         assertEquals(Instant.parse("2026-10-05T10:00:00Z"), query.getValue().createdBefore());
+    }
+
+    @Test
+    void theAdministratorListUsesTheAllReservationsUseCaseAndTheSamePageContract() throws Exception {
+        when(useCases.listAllReservations(any(ReservationQuery.class)))
+                .thenReturn(new ReservationPage(List.of(reservation()), 21L));
+
+        mockMvc.perform(read("/admin/reservations").param("page", "2").param("limit", "3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.meta.page").value(2))
+                .andExpect(jsonPath("$.meta.limit").value(3))
+                .andExpect(jsonPath("$.meta.total").value(21))
+                .andExpect(jsonPath("$.meta.totalPages").value(7));
+
+        ArgumentCaptor<ReservationQuery> query = ArgumentCaptor.forClass(ReservationQuery.class);
+        verify(useCases).listAllReservations(query.capture());
+        assertEquals(2, query.getValue().page());
+        assertEquals(3, query.getValue().limit());
     }
 
     @Test
@@ -364,6 +414,6 @@ class ReservationControllerTest {
 
     private static Reservation reservation() {
         return Reservation.hold(UUID.randomUUID(), UUID.fromString(SUB), SHOWTIME, List.of("A1", "A2"),
-                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", 0);
+                Duration.ofSeconds(600), Instant.parse("2026-10-05T10:15:30.123456Z"), "Movie", "Room 1", null, 0);
     }
 }
